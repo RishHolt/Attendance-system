@@ -7,14 +7,16 @@ use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ScheduleController;
 use App\Models\User;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
 Route::get('/', function () {
-    if (auth()->check()) {
-        if (auth()->user()->role === 'admin') {
+    if (Auth::check()) {
+        if (Auth::user()?->role === 'admin') {
             return redirect()->route('admin.dashboard');
         }
+
         return redirect()->route('dashboard');
     }
 
@@ -33,37 +35,55 @@ Route::post('/logout', [AuthController::class, 'logout'])->middleware('auth')->n
 Route::middleware('auth')->group(function () {
     // User routes (only for non-admin users)
     Route::get('/dashboard', function () {
-        if (auth()->user()->role === 'admin') {
+        if (Auth::user()?->role === 'admin') {
             return redirect()->route('admin.dashboard');
         }
+
         return Inertia::render('Dashboard');
     })->name('dashboard');
 
     Route::get('/my-qr', function () {
-        if (auth()->user()->role === 'admin') {
+        if (Auth::user()?->role === 'admin') {
             return redirect()->route('admin.dashboard');
         }
+
         return Inertia::render('MyQR');
     })->name('my-qr');
 
     Route::get('/my-schedule', function () {
-        if (auth()->user()->role === 'admin') {
+        if (Auth::user()?->role === 'admin') {
             return redirect()->route('admin.dashboard');
         }
+
         return Inertia::render('MySchedule');
     })->name('my-schedule');
 
     Route::get('/my-attendance', function () {
-        if (auth()->user()->role === 'admin') {
+        if (Auth::user()?->role === 'admin') {
             return redirect()->route('admin.dashboard');
         }
+
         return Inertia::render('MyAttendance');
     })->name('my-attendance');
+
+    Route::get('/schedule-calendar', function () {
+        $users = [];
+        if (Auth::user()?->role === 'admin') {
+            $users = \App\Models\User::where('role', '!=', 'admin')
+                ->select('id', 'name', 'email')
+                ->orderBy('name')
+                ->get();
+        }
+
+        return Inertia::render('ScheduleCalendar', [
+            'users' => $users,
+        ]);
+    })->name('schedule-calendar');
 
     // API routes
     Route::prefix('api')->group(function () {
         Route::get('/user', function () {
-            return response()->json(auth()->user());
+            return response()->json(Auth::user());
         })->name('api.user');
 
         Route::get('/schedules', [ScheduleController::class, 'index'])->name('api.schedules.index');
@@ -79,7 +99,7 @@ Route::middleware('auth')->group(function () {
     });
 
     Route::get('/scanner', function () {
-        if (auth()->user()->role !== 'admin') {
+        if (Auth::user()?->role !== 'admin') {
             abort(403);
         }
 
@@ -94,6 +114,11 @@ Route::middleware('auth')->group(function () {
         Route::post('/{user}/regenerate-qr', [UserController::class, 'regenerateQrToken'])->name('api.admin.users.regenerate-qr');
         Route::get('/{user}/schedules', [UserController::class, 'getSchedules'])->name('api.admin.users.schedules');
         Route::put('/{user}/schedules', [UserController::class, 'updateSchedules'])->name('api.admin.users.update-schedules');
+    });
+
+    Route::prefix('api/admin/attendances')->group(function () {
+        Route::post('/', [AdminAttendanceController::class, 'store'])->name('api.admin.attendances.store');
+        Route::put('/{attendance}', [AdminAttendanceController::class, 'update'])->name('api.admin.attendances.update');
     });
 
     Route::post('/api/attendance/scan', [AttendanceController::class, 'scan'])->name('api.attendance.scan');

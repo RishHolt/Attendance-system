@@ -1,5 +1,5 @@
 import { Link, useForm } from '@inertiajs/react';
-import { FormEventHandler } from 'react';
+import type { FormEventHandler } from 'react';
 
 export default function Register() {
     const { data, setData, post, processing, errors } = useForm({

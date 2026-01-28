@@ -22,6 +22,9 @@ class DashboardController extends Controller
     {
         $this->checkAdmin();
 
+        // Automatically check and mark absent users for today when dashboard loads
+        $this->markAbsentUsers(Carbon::today());
+
         $today = Carbon::today();
         $thisWeek = Carbon::now()->startOfWeek();
         $thisMonth = Carbon::now()->startOfMonth();
@@ -35,8 +38,9 @@ class DashboardController extends Controller
         $todayAttendances = Attendance::whereDate('date', $today)->count();
         $todayPresent = Attendance::whereDate('date', $today)->where('status', 'Present')->count();
         $todayLate = Attendance::whereDate('date', $today)->where('status', 'Late')->count();
-        $todayCheckedIn = Attendance::whereDate('date', $today)->whereNotNull('check_in')->count();
-        $todayCheckedOut = Attendance::whereDate('date', $today)->whereNotNull('check_out')->count();
+        $todayAbsent = Attendance::whereDate('date', $today)->where('status', 'Absent')->count();
+        $todayCheckedIn = Attendance::whereDate('date', $today)->whereNotNull('time_in')->count();
+        $todayCheckedOut = Attendance::whereDate('date', $today)->whereNotNull('time_out')->count();
 
         // This week's stats
         $weekAttendances = Attendance::where('date', '>=', $thisWeek)->count();
@@ -51,7 +55,7 @@ class DashboardController extends Controller
         // Recent attendances (last 10)
         $recentAttendances = Attendance::with('user:id,name,email')
             ->orderBy('date', 'desc')
-            ->orderBy('check_in', 'desc')
+            ->orderBy('time_in', 'desc')
             ->limit(10)
             ->get();
 
@@ -74,8 +78,9 @@ class DashboardController extends Controller
                     'total' => $todayAttendances,
                     'present' => $todayPresent,
                     'late' => $todayLate,
-                    'checked_in' => $todayCheckedIn,
-                    'checked_out' => $todayCheckedOut,
+                    'absent' => $todayAbsent,
+                    'timed_in' => $todayCheckedIn,
+                    'timed_out' => $todayCheckedOut,
                 ],
                 'week' => [
                     'total' => $weekAttendances,
@@ -91,5 +96,69 @@ class DashboardController extends Controller
             'recentAttendances' => $recentAttendances,
             'topUsers' => $topUsers,
         ]);
+    }
+
+    /**
+     * Mark users as absent if they have a schedule but didn't scan/check in
+     */
+    private function markAbsentUsers(Carbon $date): void
+    {
+        try {
+            $users = User::where('role', '!=', 'admin')->get();
+            $dayOfWeek = $date->dayOfWeek; // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
+
+            foreach ($users as $user) {
+                // Check if user has a schedule for this day
+                $schedule = $user->schedules()->where('day_of_week', $dayOfWeek)->first();
+
+                if (! $schedule) {
+                    // No schedule for this day, skip
+                    continue;
+                }
+
+                // Check if attendance record exists
+                $attendance = Attendance::where('user_id', $user->id)
+                    ->whereDate('date', $date->format('Y-m-d'))
+                    ->first();
+
+                if ($attendance) {
+                    // Attendance record exists
+                    if ($attendance->time_out === null) {
+                        if ($attendance->time_in === null) {
+                            // No time_in and no time_out - mark as absent
+                            $attendance->status = 'Absent';
+                            $attendance->save();
+                        } else {
+                            // They have time_in but forgot to time out - mark as "No Time Out"
+                            $attendance->status = 'No Time Out';
+
+                            // Auto-extend time_out to 1 hour after scheduled end time
+                            $endTime = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->end_time);
+                            $extendedTimeOut = $endTime->copy()->addHour(); // 1 hour after scheduled end time
+
+                            // Only set if current time is past the extended time
+                            if (Carbon::now()->greaterThan($extendedTimeOut)) {
+                                $attendance->time_out = $extendedTimeOut;
+                            }
+
+                            $attendance->save();
+                        }
+                    }
+                    // If they have time_out, they completed their work day - skip
+                } else {
+                    // No attendance record exists - create absent record
+                    Attendance::create([
+                        'user_id' => $user->id,
+                        'date' => $date->format('Y-m-d'),
+                        'time_in' => null,
+                        'time_out' => null,
+                        'status' => 'Absent',
+                    ]);
+                }
+            }
+        } catch (\Exception $e) {
+            // Silently fail - don't interrupt dashboard loading
+            // Log error if needed: \Log::error('Failed to mark absent users', ['error' => $e->getMessage()]);
+        }
     }
 }

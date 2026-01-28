@@ -19,10 +19,19 @@ interface Schedule {
     day_of_week: number;
     start_time: string;
     end_time: string;
+    break_time: string | null;
+    break_time_hour: number;
 }
 
 interface UsersPageProps {
-    users: User[];
+    users: {
+        data: User[];
+        current_page: number;
+        last_page: number;
+        per_page: number;
+        total: number;
+        links: Array<{ url: string | null; label: string; active: boolean }>;
+    };
 }
 
 const DAYS_OF_WEEK = [
@@ -36,14 +45,16 @@ const DAYS_OF_WEEK = [
 ];
 
 export default function Users({ users: initialUsers }: UsersPageProps) {
-    const [users, setUsers] = useState<User[]>(initialUsers);
+    const [users, setUsers] = useState<User[]>(initialUsers.data || initialUsers);
     const [editingUser, setEditingUser] = useState<User | null>(null);
     const [editingScheduleUser, setEditingScheduleUser] = useState<User | null>(null);
     const [showCreateModal, setShowCreateModal] = useState(false);
     const [showScheduleModal, setShowScheduleModal] = useState(false);
     const [schedules, setSchedules] = useState<Schedule[]>([]);
     const [selectedDays, setSelectedDays] = useState<Set<number>>(new Set());
-    const [scheduleData, setScheduleData] = useState<Record<number, { start_time: string; end_time: string }>>({});
+    const [scheduleData, setScheduleData] = useState<Record<number, { start_time: string; end_time: string; break_time: string; break_time_hour: number }>>({});
+    const [customScheduleDays, setCustomScheduleDays] = useState<Set<number>>(new Set());
+    const [defaultTime, setDefaultTime] = useState({ start_time: '08:00', end_time: '17:00', break_time: '12:00', break_time_hour: 1 });
     const [loadingSchedules, setLoadingSchedules] = useState(false);
     const [savingSchedule, setSavingSchedule] = useState(false);
     const [editForm, setEditForm] = useState({
@@ -61,7 +72,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
     });
 
     useEffect(() => {
-        setUsers(initialUsers);
+        setUsers(initialUsers.data || initialUsers);
     }, [initialUsers]);
 
     const handleEdit = (user: User): void => {
@@ -80,30 +91,57 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
         setLoadingSchedules(true);
 
         try {
+            const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
             const response = await fetch(`/api/admin/users/${user.id}/schedules`, {
+                method: 'GET',
                 headers: {
                     'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-TOKEN': csrfToken,
                 },
+                credentials: 'same-origin',
             });
 
             if (!response.ok) {
-                throw new Error('Failed to fetch schedules');
+                if (response.status === 419) {
+                    throw new Error('Session expired. Please refresh the page and try again.');
+                }
+                throw new Error(`Failed to fetch schedules: ${response.status} ${response.statusText}`);
             }
 
             const data = await response.json();
             setSchedules(data);
 
-            const days = new Set(data.map((s: Schedule) => s.day_of_week));
+            const days = new Set<number>(data.map((s: Schedule) => s.day_of_week));
             setSelectedDays(days);
 
-            const scheduleMap: Record<number, { start_time: string; end_time: string }> = {};
+            const scheduleMap: Record<number, { start_time: string; end_time: string; break_time: string; break_time_hour: number }> = {};
+            const customDays = new Set<number>();
             data.forEach((s: Schedule) => {
+                const startTime = s.start_time.substring(0, 5);
+                const endTime = s.end_time.substring(0, 5);
+                const breakTime = s.break_time ? s.break_time.substring(0, 5) : '12:00';
+                const breakTimeHour = s.break_time_hour || 1;
+                
                 scheduleMap[s.day_of_week] = {
-                    start_time: s.start_time.substring(0, 5),
-                    end_time: s.end_time.substring(0, 5),
+                    start_time: startTime,
+                    end_time: endTime,
+                    break_time: breakTime,
+                    break_time_hour: breakTimeHour,
                 };
+                
+                // Only mark as custom if times differ from default
+                const isCustom = startTime !== defaultTime.start_time ||
+                    endTime !== defaultTime.end_time ||
+                    breakTime !== defaultTime.break_time ||
+                    breakTimeHour !== defaultTime.break_time_hour;
+                
+                if (isCustom) {
+                    customDays.add(s.day_of_week);
+                }
             });
             setScheduleData(scheduleMap);
+            setCustomScheduleDays(customDays);
         } catch (error) {
             await Swal.fire({
                 icon: 'error',
@@ -122,20 +160,39 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
             const newScheduleData = { ...scheduleData };
             delete newScheduleData[day];
             setScheduleData(newScheduleData);
+            const newCustomDays = new Set(customScheduleDays);
+            newCustomDays.delete(day);
+            setCustomScheduleDays(newCustomDays);
         } else {
             newSelectedDays.add(day);
-            setScheduleData({
-                ...scheduleData,
-                [day]: {
-                    start_time: '09:00',
-                    end_time: '17:00',
-                },
-            });
+            // Don't set schedule data here - only when they add custom schedule
         }
         setSelectedDays(newSelectedDays);
     };
 
-    const updateScheduleTime = (day: number, field: 'start_time' | 'end_time', value: string): void => {
+    const toggleCustomSchedule = (day: number): void => {
+        const newCustomDays = new Set(customScheduleDays);
+        if (newCustomDays.has(day)) {
+            newCustomDays.delete(day);
+            const newScheduleData = { ...scheduleData };
+            delete newScheduleData[day];
+            setScheduleData(newScheduleData);
+        } else {
+            newCustomDays.add(day);
+            setScheduleData({
+                ...scheduleData,
+                [day]: {
+                    start_time: defaultTime.start_time,
+                    end_time: defaultTime.end_time,
+                    break_time: defaultTime.break_time,
+                    break_time_hour: defaultTime.break_time_hour,
+                },
+            });
+        }
+        setCustomScheduleDays(newCustomDays);
+    };
+
+    const updateScheduleTime = (day: number, field: 'start_time' | 'end_time' | 'break_time' | 'break_time_hour', value: string | number): void => {
         setScheduleData({
             ...scheduleData,
             [day]: {
@@ -152,11 +209,26 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
 
         setSavingSchedule(true);
 
-        const schedulesToSave = Array.from(selectedDays).map((day) => ({
-            day_of_week: day,
-            start_time: scheduleData[day].start_time,
-            end_time: scheduleData[day].end_time,
-        }));
+        const schedulesToSave = Array.from(selectedDays).map((day) => {
+            // If custom schedule exists, use it; otherwise use default
+            if (customScheduleDays.has(day) && scheduleData[day]) {
+                return {
+                    day_of_week: day,
+                    start_time: scheduleData[day].start_time,
+                    end_time: scheduleData[day].end_time,
+                    break_time: scheduleData[day].break_time || null,
+                    break_time_hour: scheduleData[day].break_time_hour || 1,
+                };
+            }
+            // Use default time for days without custom schedule
+            return {
+                day_of_week: day,
+                start_time: defaultTime.start_time,
+                end_time: defaultTime.end_time,
+                break_time: defaultTime.break_time || null,
+                break_time_hour: defaultTime.break_time_hour || 1,
+            };
+        });
 
         try {
             const response = await fetch(`/api/admin/users/${editingScheduleUser.id}/schedules`, {
@@ -166,6 +238,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '',
                 },
+                credentials: 'same-origin',
                 body: JSON.stringify({ schedules: schedulesToSave }),
             });
 
@@ -215,6 +288,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '',
                 },
+                credentials: 'same-origin',
                 body: JSON.stringify(createForm),
             });
 
@@ -272,6 +346,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '',
                 },
+                credentials: 'same-origin',
                 body: JSON.stringify(editForm),
             });
 
@@ -330,6 +405,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '',
                 },
+                credentials: 'same-origin',
             });
 
             const data = await response.json();
@@ -376,6 +452,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '',
                 },
+                credentials: 'same-origin',
             });
 
             const data = await response.json();
@@ -406,54 +483,54 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
         <AdminLayout>
             <div className="space-y-6">
                 {/* Header */}
-                <div className="flex items-center justify-between">
+                <div className="flex justify-between items-center">
                     <div>
-                        <h1 className="text-3xl font-bold text-gray-900">User Management</h1>
-                        <p className="text-gray-600 mt-1">Manage users, roles, and schedules</p>
+                        <h1 className="font-bold text-gray-900 text-3xl">User Management</h1>
+                        <p className="mt-1 text-gray-600">Manage users, roles, and schedules</p>
                     </div>
                     <button
                         onClick={() => setShowCreateModal(true)}
-                        className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 rounded-lg font-semibold text-white transition-all duration-200 shadow-md hover:shadow-lg"
+                        className="bg-indigo-600 hover:bg-indigo-700 shadow-md hover:shadow-lg px-6 py-3 rounded-lg font-semibold text-white transition-all duration-200"
                     >
                         + Add User
                     </button>
                 </div>
 
                 {/* Stats Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="bg-white rounded-xl shadow-md p-6 border border-gray-200">
-                        <div className="flex items-center justify-between">
+                <div className="gap-6 grid grid-cols-1 md:grid-cols-3">
+                    <div className="bg-white shadow-md p-6 border border-gray-200 rounded-xl">
+                        <div className="flex justify-between items-center">
                             <div>
-                                <p className="text-sm font-medium text-gray-600">Total Users</p>
-                                <p className="text-2xl font-bold text-gray-900 mt-1">{users.length}</p>
+                                <p className="font-medium text-gray-600 text-sm">Total Users</p>
+                                <p className="mt-1 font-bold text-gray-900 text-2xl">{initialUsers.total || users.length}</p>
                             </div>
-                            <div className="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
+                            <div className="flex justify-center items-center bg-indigo-100 rounded-lg w-12 h-12">
                                 <span className="text-2xl">👥</span>
                             </div>
                         </div>
                     </div>
-                    <div className="bg-white rounded-xl shadow-md p-6 border border-gray-200">
-                        <div className="flex items-center justify-between">
+                    <div className="bg-white shadow-md p-6 border border-gray-200 rounded-xl">
+                        <div className="flex justify-between items-center">
                             <div>
-                                <p className="text-sm font-medium text-gray-600">Admins</p>
-                                <p className="text-2xl font-bold text-gray-900 mt-1">
+                                <p className="font-medium text-gray-600 text-sm">Admins</p>
+                                <p className="mt-1 font-bold text-gray-900 text-2xl">
                                     {users.filter((u) => u.role === 'admin').length}
                                 </p>
                             </div>
-                            <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
+                            <div className="flex justify-center items-center bg-purple-100 rounded-lg w-12 h-12">
                                 <span className="text-2xl">👑</span>
                             </div>
                         </div>
                     </div>
-                    <div className="bg-white rounded-xl shadow-md p-6 border border-gray-200">
-                        <div className="flex items-center justify-between">
+                    <div className="bg-white shadow-md p-6 border border-gray-200 rounded-xl">
+                        <div className="flex justify-between items-center">
                             <div>
-                                <p className="text-sm font-medium text-gray-600">Regular Users</p>
-                                <p className="text-2xl font-bold text-gray-900 mt-1">
+                                <p className="font-medium text-gray-600 text-sm">Regular Users</p>
+                                <p className="mt-1 font-bold text-gray-900 text-2xl">
                                     {users.filter((u) => u.role === 'user').length}
                                 </p>
                             </div>
-                            <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                            <div className="flex justify-center items-center bg-blue-100 rounded-lg w-12 h-12">
                                 <span className="text-2xl">👤</span>
                             </div>
                         </div>
@@ -461,27 +538,27 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                 </div>
 
                 {/* Users Table */}
-                <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
+                <div className="bg-white shadow-md border border-gray-200 rounded-xl overflow-hidden">
                     <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-gray-200">
+                        <table className="divide-y divide-gray-200 min-w-full">
                             <thead className="bg-gray-50">
                                 <tr>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         User
                                     </th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         Role
                                     </th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         Schedules
                                     </th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         Attendances
                                     </th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         Created
                                     </th>
-                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-right uppercase tracking-wider">
                                         Actions
                                     </th>
                                 </tr>
@@ -491,8 +568,8 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                     <tr key={user.id} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-6 py-4 whitespace-nowrap">
                                             <div className="flex items-center">
-                                                <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center mr-3">
-                                                    <span className="text-indigo-600 font-semibold">
+                                                <div className="flex justify-center items-center bg-indigo-100 mr-3 rounded-full w-10 h-10">
+                                                    <span className="font-semibold text-indigo-600">
                                                         {user.name.charAt(0).toUpperCase()}
                                                     </span>
                                                 </div>
@@ -526,28 +603,28 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             <div className="flex justify-end gap-2">
                                                 <button
                                                     onClick={() => handleEdit(user)}
-                                                    className="px-3 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded-lg text-xs font-medium transition-colors"
+                                                    className="bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-lg font-medium text-blue-600 text-xs transition-colors"
                                                     title="Edit User"
                                                 >
                                                     Edit
                                                 </button>
                                                 <button
                                                     onClick={() => handleEditSchedule(user)}
-                                                    className="px-3 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-600 rounded-lg text-xs font-medium transition-colors"
+                                                    className="bg-indigo-50 hover:bg-indigo-100 px-3 py-1 rounded-lg font-medium text-indigo-600 text-xs transition-colors"
                                                     title="Edit Schedule"
                                                 >
                                                     Schedule
                                                 </button>
                                                 <button
                                                     onClick={() => handleRegenerateQR(user)}
-                                                    className="px-3 py-1 bg-green-50 hover:bg-green-100 text-green-600 rounded-lg text-xs font-medium transition-colors"
+                                                    className="bg-green-50 hover:bg-green-100 px-3 py-1 rounded-lg font-medium text-green-600 text-xs transition-colors"
                                                     title="Regenerate QR"
                                                 >
                                                     QR
                                                 </button>
                                                 <button
                                                     onClick={() => handleDelete(user)}
-                                                    className="px-3 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-xs font-medium transition-colors"
+                                                    className="bg-red-50 hover:bg-red-100 px-3 py-1 rounded-lg font-medium text-red-600 text-xs transition-colors"
                                                     title="Delete User"
                                                 >
                                                     Delete
@@ -559,24 +636,74 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                             </tbody>
                         </table>
                     </div>
+                    
+                    {/* Pagination */}
+                    {initialUsers.last_page > 1 && (
+                        <div className="bg-gray-50 px-6 py-4 border-gray-200 border-t">
+                            <div className="flex justify-between items-center">
+                                <div className="text-gray-700 text-sm">
+                                    Showing {((initialUsers.current_page - 1) * initialUsers.per_page) + 1} to{' '}
+                                    {Math.min(initialUsers.current_page * initialUsers.per_page, initialUsers.total)} of{' '}
+                                    {initialUsers.total} results
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                    {initialUsers.links.map((link, index) => {
+                                        if (link.url === null) {
+                                            return (
+                                                <span
+                                                    key={index}
+                                                    className={`px-3 py-2 text-sm font-medium ${
+                                                        link.active
+                                                            ? 'bg-indigo-600 text-white'
+                                                            : 'bg-white text-gray-500 cursor-not-allowed'
+                                                    } rounded-lg border border-gray-300`}
+                                                    dangerouslySetInnerHTML={{ __html: link.label }}
+                                                />
+                                            );
+                                        }
+                                        return (
+                                            <button
+                                                key={index}
+                                                onClick={() => {
+                                                    if (link.url) {
+                                                        router.get(link.url, {}, {
+                                                            preserveState: true,
+                                                            preserveScroll: true,
+                                                        });
+                                                    }
+                                                }}
+                                                className={`px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                                                    link.active
+                                                        ? 'bg-indigo-600 text-white border-indigo-600'
+                                                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                                }`}
+                                                dangerouslySetInnerHTML={{ __html: link.label }}
+                                            />
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Schedule Modal */}
                 {showScheduleModal && editingScheduleUser && (
                     <div 
-                        className="z-50 fixed inset-0 bg-black/60 backdrop-blur-sm w-full h-full overflow-y-auto flex items-center justify-center p-4 animate-fadeIn"
-                        onClick={(e) => {
+                        className="z-50 fixed inset-0 flex justify-center items-center bg-black/60 backdrop-blur-sm p-4 w-full h-full overflow-y-auto animate-fadeIn"
+                                        onClick={(e) => {
                             if (e.target === e.currentTarget) {
                                 setShowScheduleModal(false);
                                 setEditingScheduleUser(null);
                                 setSelectedDays(new Set());
                                 setScheduleData({});
+                                setCustomScheduleDays(new Set());
                             }
                         }}
                     >
-                        <div className="bg-white shadow-2xl rounded-2xl w-full max-w-2xl transform transition-all animate-slideUp">
+                        <div className="bg-white shadow-2xl rounded-2xl w-full max-w-2xl transition-all animate-slideUp transform">
                             <div className="p-6">
-                                <div className="flex items-center justify-between mb-6">
+                                <div className="flex justify-between items-center mb-6">
                                     <h3 className="font-semibold text-gray-900 text-xl">
                                         Edit Schedule - {editingScheduleUser.name}
                                     </h3>
@@ -586,8 +713,9 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             setEditingScheduleUser(null);
                                             setSelectedDays(new Set());
                                             setScheduleData({});
+                                            setCustomScheduleDays(new Set());
                                         }}
-                                        className="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded-lg hover:bg-gray-100"
+                                        className="hover:bg-gray-100 p-1 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
                                     >
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -596,16 +724,61 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                 </div>
                                 {loadingSchedules ? (
                                     <div className="py-12 text-center">
-                                        <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-                                        <p className="text-gray-600 mt-4">Loading schedules...</p>
+                                        <div className="inline-block border-indigo-600 border-b-2 rounded-full w-8 h-8 animate-spin"></div>
+                                        <p className="mt-4 text-gray-600">Loading schedules...</p>
                                     </div>
                                 ) : (
                                     <>
-                                        <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                                        {/* Default Time Settings */}
+                                        <div className="bg-indigo-50 mb-4 p-4 border border-indigo-200 rounded-lg">
+                                            <h4 className="mb-3 font-semibold text-gray-900 text-sm">Default Time Settings</h4>
+                                            <div className="gap-4 grid grid-cols-2">
+                                                <div>
+                                                    <label className="block mb-1 font-medium text-gray-700 text-xs">Start Time</label>
+                                                    <input
+                                                        type="time"
+                                                        value={defaultTime.start_time}
+                                                        onChange={(e) => setDefaultTime({ ...defaultTime, start_time: e.target.value })}
+                                                        className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block mb-1 font-medium text-gray-700 text-xs">End Time</label>
+                                                    <input
+                                                        type="time"
+                                                        value={defaultTime.end_time}
+                                                        onChange={(e) => setDefaultTime({ ...defaultTime, end_time: e.target.value })}
+                                                        className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block mb-1 font-medium text-gray-700 text-xs">Break Time</label>
+                                                    <input
+                                                        type="time"
+                                                        value={defaultTime.break_time}
+                                                        onChange={(e) => setDefaultTime({ ...defaultTime, break_time: e.target.value })}
+                                                        className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
+                                                    />
+                                                </div>
+                                                <div>
+                                                    <label className="block mb-1 font-medium text-gray-700 text-xs">Break Hours</label>
+                                                    <input
+                                                        type="number"
+                                                        step="0.5"
+                                                        min="0"
+                                                        max="24"
+                                                        value={defaultTime.break_time_hour}
+                                                        onChange={(e) => setDefaultTime({ ...defaultTime, break_time_hour: parseFloat(e.target.value) || 1 })}
+                                                        className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-3 pr-2 max-h-96 overflow-y-auto">
                                             {DAYS_OF_WEEK.map((day) => (
-                                                <div key={day.value} className="p-4 border border-gray-200 rounded-xl hover:border-indigo-300 transition-colors bg-gray-50/50">
-                                                    <div className="flex justify-between items-center mb-3">
-                                                        <label className="flex items-center space-x-2 cursor-pointer">
+                                                <div key={day.value} className="bg-gray-50/50 p-4 border border-gray-200 hover:border-indigo-300 rounded-xl transition-colors">
+                                                    <div className="flex justify-between items-center">
+                                                        <label className="flex flex-1 items-center space-x-2 cursor-pointer">
                                                             <input
                                                                 type="checkbox"
                                                                 checked={selectedDays.has(day.value)}
@@ -614,19 +787,37 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                             />
                                                             <span className="font-semibold text-gray-900">{day.label}</span>
                                                         </label>
+                                                        {selectedDays.has(day.value) && !customScheduleDays.has(day.value) && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => toggleCustomSchedule(day.value)}
+                                                                className="bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-lg font-medium text-indigo-600 text-sm transition-colors"
+                                                            >
+                                                                + Add Custom Schedule
+                                                            </button>
+                                                        )}
+                                                        {selectedDays.has(day.value) && customScheduleDays.has(day.value) && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => toggleCustomSchedule(day.value)}
+                                                                className="bg-gray-100 hover:bg-gray-200 px-3 py-1.5 rounded-lg font-medium text-gray-600 text-sm transition-colors"
+                                                            >
+                                                                Remove Custom
+                                                            </button>
+                                                        )}
                                                     </div>
 
-                                                    {selectedDays.has(day.value) && (
-                                                        <div className="gap-4 grid grid-cols-2 mt-3">
+                                                    {selectedDays.has(day.value) && customScheduleDays.has(day.value) && (
+                                                        <div className="gap-4 grid grid-cols-2 mt-4 animate-fadeIn">
                                                             <div>
                                                                 <label className="block mb-2 font-medium text-gray-700 text-sm">
                                                                     Start Time
                                                                 </label>
                                                                 <input
                                                                     type="time"
-                                                                    value={scheduleData[day.value]?.start_time || '09:00'}
+                                                                    value={scheduleData[day.value]?.start_time || defaultTime.start_time}
                                                                     onChange={(e) => updateScheduleTime(day.value, 'start_time', e.target.value)}
-                                                                    className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                                     required
                                                                 />
                                                             </div>
@@ -634,10 +825,31 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                                 <label className="block mb-2 font-medium text-gray-700 text-sm">End Time</label>
                                                                 <input
                                                                     type="time"
-                                                                    value={scheduleData[day.value]?.end_time || '17:00'}
+                                                                    value={scheduleData[day.value]?.end_time || defaultTime.end_time}
                                                                     onChange={(e) => updateScheduleTime(day.value, 'end_time', e.target.value)}
-                                                                    className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                                     required
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <label className="block mb-2 font-medium text-gray-700 text-sm">Break Time</label>
+                                                                <input
+                                                                    type="time"
+                                                                    value={scheduleData[day.value]?.break_time || defaultTime.break_time}
+                                                                    onChange={(e) => updateScheduleTime(day.value, 'break_time', e.target.value)}
+                                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <label className="block mb-2 font-medium text-gray-700 text-sm">Break Hours</label>
+                                                                <input
+                                                                    type="number"
+                                                                    step="0.5"
+                                                                    min="0"
+                                                                    max="24"
+                                                                    value={scheduleData[day.value]?.break_time_hour || defaultTime.break_time_hour}
+                                                                    onChange={(e) => updateScheduleTime(day.value, 'break_time_hour', parseFloat(e.target.value) || 1)}
+                                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                                 />
                                                             </div>
                                                         </div>
@@ -645,26 +857,27 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                 </div>
                                             ))}
                                         </div>
-                                        <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
+                                        <div className="flex justify-end gap-3 mt-6 pt-4 border-gray-200 border-t">
                                             <button
                                                 onClick={() => {
                                                     setShowScheduleModal(false);
                                                     setEditingScheduleUser(null);
                                                     setSelectedDays(new Set());
                                                     setScheduleData({});
+                                                    setCustomScheduleDays(new Set());
                                                 }}
-                                                className="px-5 py-2.5 rounded-lg font-medium text-gray-700 text-sm bg-gray-100 hover:bg-gray-200 transition-colors"
+                                                className="bg-gray-100 hover:bg-gray-200 px-5 py-2.5 rounded-lg font-medium text-gray-700 text-sm transition-colors"
                                             >
                                                 Cancel
                                             </button>
                                             <button
                                                 onClick={handleSaveSchedule}
                                                 disabled={savingSchedule}
-                                                className="px-5 py-2.5 rounded-lg font-medium text-white text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-md hover:shadow-lg"
+                                                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 shadow-md hover:shadow-lg px-5 py-2.5 rounded-lg font-medium text-white text-sm transition-colors disabled:cursor-not-allowed"
                                             >
                                                 {savingSchedule ? (
                                                     <span className="flex items-center gap-2">
-                                                        <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                                                        <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                                                             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                                                             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                                                         </svg>
@@ -683,7 +896,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                 {/* Create Modal */}
                 {showCreateModal && (
                     <div 
-                        className="z-50 fixed inset-0 bg-black/60 backdrop-blur-sm w-full h-full overflow-y-auto flex items-center justify-center p-4 animate-fadeIn"
+                        className="z-50 fixed inset-0 flex justify-center items-center bg-black/60 backdrop-blur-sm p-4 w-full h-full overflow-y-auto animate-fadeIn"
                         onClick={(e) => {
                             if (e.target === e.currentTarget) {
                                 setShowCreateModal(false);
@@ -697,9 +910,9 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                             }
                         }}
                     >
-                        <div className="bg-white shadow-2xl rounded-2xl w-full max-w-md transform transition-all animate-slideUp">
+                        <div className="bg-white shadow-2xl rounded-2xl w-full max-w-md transition-all animate-slideUp transform">
                             <div className="p-6">
-                                <div className="flex items-center justify-between mb-6">
+                                <div className="flex justify-between items-center mb-6">
                                     <h3 className="font-semibold text-gray-900 text-xl">Create New User</h3>
                                     <button
                                         onClick={() => {
@@ -712,7 +925,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                 password_confirmation: '',
                                             });
                                         }}
-                                        className="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded-lg hover:bg-gray-100"
+                                        className="hover:bg-gray-100 p-1 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
                                     >
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -726,7 +939,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="text"
                                             value={createForm.name}
                                             onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             required
                                         />
                                     </div>
@@ -736,7 +949,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="email"
                                             value={createForm.email}
                                             onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             required
                                         />
                                     </div>
@@ -745,7 +958,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                         <select
                                             value={createForm.role}
                                             onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors bg-white"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                         >
                                             <option value="user">User</option>
                                             <option value="admin">Admin</option>
@@ -757,7 +970,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="password"
                                             value={createForm.password}
                                             onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             required
                                         />
                                     </div>
@@ -767,12 +980,12 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="password"
                                             value={createForm.password_confirmation}
                                             onChange={(e) => setCreateForm({ ...createForm, password_confirmation: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             required
                                         />
                                     </div>
                                 </div>
-                                <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
+                                <div className="flex justify-end gap-3 mt-6 pt-4 border-gray-200 border-t">
                                     <button
                                         onClick={() => {
                                             setShowCreateModal(false);
@@ -784,13 +997,13 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                 password_confirmation: '',
                                             });
                                         }}
-                                        className="px-5 py-2.5 rounded-lg font-medium text-gray-700 text-sm bg-gray-100 hover:bg-gray-200 transition-colors"
+                                        className="bg-gray-100 hover:bg-gray-200 px-5 py-2.5 rounded-lg font-medium text-gray-700 text-sm transition-colors"
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         onClick={handleCreate}
-                                        className="px-5 py-2.5 rounded-lg font-medium text-white text-sm bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-md hover:shadow-lg"
+                                        className="bg-indigo-600 hover:bg-indigo-700 shadow-md hover:shadow-lg px-5 py-2.5 rounded-lg font-medium text-white text-sm transition-colors"
                                     >
                                         Create
                                     </button>
@@ -803,20 +1016,20 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                 {/* Edit Modal */}
                 {editingUser && (
                     <div 
-                        className="z-50 fixed inset-0 bg-black/60 backdrop-blur-sm w-full h-full overflow-y-auto flex items-center justify-center p-4 animate-fadeIn"
+                        className="z-50 fixed inset-0 flex justify-center items-center bg-black/60 backdrop-blur-sm p-4 w-full h-full overflow-y-auto animate-fadeIn"
                         onClick={(e) => {
                             if (e.target === e.currentTarget) {
                                 setEditingUser(null);
                             }
                         }}
                     >
-                        <div className="bg-white shadow-2xl rounded-2xl w-full max-w-md transform transition-all animate-slideUp">
+                        <div className="bg-white shadow-2xl rounded-2xl w-full max-w-md transition-all animate-slideUp transform">
                             <div className="p-6">
-                                <div className="flex items-center justify-between mb-6">
+                                <div className="flex justify-between items-center mb-6">
                                     <h3 className="font-semibold text-gray-900 text-xl">Edit User</h3>
                                     <button
                                         onClick={() => setEditingUser(null)}
-                                        className="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded-lg hover:bg-gray-100"
+                                        className="hover:bg-gray-100 p-1 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
                                     >
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -830,7 +1043,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="text"
                                             value={editForm.name}
                                             onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                         />
                                     </div>
                                     <div>
@@ -839,7 +1052,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="email"
                                             value={editForm.email}
                                             onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                         />
                                     </div>
                                     <div>
@@ -847,7 +1060,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                         <select
                                             value={editForm.role}
                                             onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors bg-white"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                         >
                                             <option value="user">User</option>
                                             <option value="admin">Admin</option>
@@ -861,21 +1074,21 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="password"
                                             value={editForm.password}
                                             onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 w-full transition-colors"
+                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             placeholder="New password"
                                         />
                                     </div>
                                 </div>
-                                <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
+                                <div className="flex justify-end gap-3 mt-6 pt-4 border-gray-200 border-t">
                                     <button
                                         onClick={() => setEditingUser(null)}
-                                        className="px-5 py-2.5 rounded-lg font-medium text-gray-700 text-sm bg-gray-100 hover:bg-gray-200 transition-colors"
+                                        className="bg-gray-100 hover:bg-gray-200 px-5 py-2.5 rounded-lg font-medium text-gray-700 text-sm transition-colors"
                                     >
                                         Cancel
                                     </button>
                                     <button
                                         onClick={handleUpdate}
-                                        className="px-5 py-2.5 rounded-lg font-medium text-white text-sm bg-indigo-600 hover:bg-indigo-700 transition-colors shadow-md hover:shadow-lg"
+                                        className="bg-indigo-600 hover:bg-indigo-700 shadow-md hover:shadow-lg px-5 py-2.5 rounded-lg font-medium text-white text-sm transition-colors"
                                     >
                                         Update
                                     </button>

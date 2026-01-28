@@ -12,7 +12,19 @@ class ScheduleController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $schedules = $request->user()->schedules()->orderBy('day_of_week')->get();
+        $authUser = $request->user();
+
+        // Allow admin to view any user's schedules
+        if ($authUser->role === 'admin' && $request->has('user_id') && $request->user_id) {
+            $userId = (int) $request->user_id;
+            $user = \App\Models\User::find($userId);
+            if (! $user) {
+                return response()->json(['error' => 'User not found'], 404);
+            }
+            $schedules = $user->schedules()->orderBy('day_of_week')->get();
+        } else {
+            $schedules = $authUser->schedules()->orderBy('day_of_week')->get();
+        }
 
         return response()->json($schedules);
     }
@@ -32,6 +44,8 @@ class ScheduleController extends Controller
                     'day_of_week' => $scheduleData['day_of_week'],
                     'start_time' => $scheduleData['start_time'],
                     'end_time' => $scheduleData['end_time'],
+                    'break_time' => $scheduleData['break_time'] ?? null,
+                    'break_time_hour' => $scheduleData['break_time_hour'] ?? 1.0,
                 ]);
             }
         });

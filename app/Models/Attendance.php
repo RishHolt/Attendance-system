@@ -10,8 +10,8 @@ class Attendance extends Model
     protected $fillable = [
         'user_id',
         'date',
-        'check_in',
-        'check_out',
+        'time_in',
+        'time_out',
         'status',
     ];
 
@@ -19,8 +19,8 @@ class Attendance extends Model
     {
         return [
             'date' => 'date',
-            'check_in' => 'datetime',
-            'check_out' => 'datetime',
+            'time_in' => 'datetime',
+            'time_out' => 'datetime',
         ];
     }
 

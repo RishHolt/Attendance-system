@@ -12,8 +12,8 @@ interface User {
 interface Attendance {
     id: number;
     date: string;
-    check_in: string | null;
-    check_out: string | null;
+    time_in: string | null;
+    time_out: string | null;
     status: string;
 }
 
@@ -87,25 +87,33 @@ export default function Dashboard() {
                         <h2 className="text-lg font-semibold text-gray-900 mb-4">Today's Status</h2>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-                                <p className="text-sm font-medium text-blue-600 mb-1">Check In</p>
+                                <p className="text-sm font-medium text-blue-600 mb-1">Time In</p>
                                 <p className="text-2xl font-bold text-blue-900">
-                                    {todayAttendance.check_in
-                                        ? new Date(todayAttendance.check_in).toLocaleTimeString('en-US', {
-                                              hour: '2-digit',
-                                              minute: '2-digit',
-                                          })
-                                        : 'Not checked in'}
+                                    {todayAttendance.time_in
+                                        ? (() => {
+                                              const date = new Date(todayAttendance.time_in);
+                                              const hours = date.getUTCHours();
+                                              const minutes = date.getUTCMinutes();
+                                              const period = hours >= 12 ? 'PM' : 'AM';
+                                              const displayHours = hours % 12 || 12;
+                                              return `${displayHours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} ${period}`;
+                                          })()
+                                        : 'Not timed in'}
                                 </p>
                             </div>
                             <div className="bg-green-50 rounded-lg p-4 border border-green-200">
-                                <p className="text-sm font-medium text-green-600 mb-1">Check Out</p>
+                                <p className="text-sm font-medium text-green-600 mb-1">Time Out</p>
                                 <p className="text-2xl font-bold text-green-900">
-                                    {todayAttendance.check_out
-                                        ? new Date(todayAttendance.check_out).toLocaleTimeString('en-US', {
-                                              hour: '2-digit',
-                                              minute: '2-digit',
-                                          })
-                                        : 'Not checked out'}
+                                    {todayAttendance.time_out
+                                        ? (() => {
+                                              const date = new Date(todayAttendance.time_out);
+                                              const hours = date.getUTCHours();
+                                              const minutes = date.getUTCMinutes();
+                                              const period = hours >= 12 ? 'PM' : 'AM';
+                                              const displayHours = hours % 12 || 12;
+                                              return `${displayHours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} ${period}`;
+                                          })()
+                                        : 'Not timed out'}
                                 </p>
                             </div>
                             <div

@@ -1,8 +1,8 @@
 import { Html5Qrcode } from 'html5-qrcode';
 import { useEffect, useRef, useState } from 'react';
 import Swal from 'sweetalert2';
-import { initOfflineSync, savePendingScan, syncPendingScans } from '../lib/dexieSync';
 import AdminLayout from '../components/AdminLayout';
+import { initOfflineSync, savePendingScan, syncPendingScans } from '../lib/dexieSync';
 
 // Helper function to get current local time in 12-hour format with AM/PM
 const getCurrentLocalTime = (): string => {
@@ -264,6 +264,7 @@ export default function Scanner() {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': csrfToken,
                 },
+                credentials: 'same-origin',
                 body: JSON.stringify({ qr_token: qrToken.trim() }),
             });
 

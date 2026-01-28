@@ -12,6 +12,8 @@ class Schedule extends Model
         'day_of_week',
         'start_time',
         'end_time',
+        'break_time',
+        'break_time_hour',
     ];
 
     protected function casts(): array

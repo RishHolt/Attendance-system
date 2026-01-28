@@ -9,6 +9,7 @@ use App\Http\Requests\UpdateUserRequest;
 use App\Models\Schedule;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Inertia\Inertia;
@@ -18,7 +19,7 @@ class UserController extends Controller
 {
     private function checkAdmin(): void
     {
-        if (auth()->user()->role !== 'admin') {
+        if (Auth::user()?->role !== 'admin') {
             abort(403);
         }
     }
@@ -29,7 +30,7 @@ class UserController extends Controller
 
         $users = User::withCount(['attendances', 'schedules'])
             ->orderBy('created_at', 'desc')
-            ->get();
+            ->paginate(10);
 
         return Inertia::render('Admin/Users', [
             'users' => $users,
@@ -91,7 +92,7 @@ class UserController extends Controller
         $this->checkAdmin();
 
         // Prevent deleting yourself
-        if ($user->id === auth()->id()) {
+        if ($user->id === Auth::id()) {
             return response()->json([
                 'success' => false,
                 'message' => 'You cannot delete your own account',
@@ -144,6 +145,8 @@ class UserController extends Controller
                     'day_of_week' => $scheduleData['day_of_week'],
                     'start_time' => $scheduleData['start_time'],
                     'end_time' => $scheduleData['end_time'],
+                    'break_time' => $scheduleData['break_time'] ?? null,
+                    'break_time_hour' => $scheduleData['break_time_hour'] ?? 1.0,
                 ]);
             }
         });

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { useEffect, useRef, useState } from 'react';
 import UserLayout from '../components/UserLayout';
 
 interface User {
@@ -165,8 +165,8 @@ export default function MyQR() {
                             <QRCodeSVG value={user.qr_token} size={280} level="H" />
                         </div>
 
-                        {/* Token Display */}
-                        <div className="w-full max-w-md">
+                        {/* Token Display - Disabled */}
+                        {/* <div className="w-full max-w-md">
                             <label className="block text-sm font-medium text-gray-700 mb-2">QR Token</label>
                             <div className="flex items-center space-x-2">
                                 <input
@@ -182,7 +182,7 @@ export default function MyQR() {
                                     {copied ? '✓ Copied' : 'Copy'}
                                 </button>
                             </div>
-                        </div>
+                        </div> */}
 
                         {/* User Info and Download Button */}
                         <div className="w-full max-w-md mt-6 pt-6 border-t border-gray-200">

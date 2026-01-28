@@ -1,4 +1,5 @@
-import Dexie, { Table } from 'dexie';
+import type { Table } from 'dexie';
+import Dexie from 'dexie';
 
 interface PendingScan {
     id?: number;
@@ -53,6 +54,7 @@ export const syncPendingScans = async (): Promise<number> => {
                     'Accept': 'application/json',
                     'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '',
                 },
+                credentials: 'same-origin',
                 body: JSON.stringify({ qr_token: scan.qr_token }),
             });
 

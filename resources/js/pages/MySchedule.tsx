@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import Swal from 'sweetalert2';
 import UserLayout from '../components/UserLayout';
 
 interface Schedule {
@@ -7,6 +6,8 @@ interface Schedule {
     day_of_week: number;
     start_time: string;
     end_time: string;
+    break_time: string | null;
+    break_time_hour: number;
 }
 
 const DAYS_OF_WEEK = [
@@ -19,12 +20,28 @@ const DAYS_OF_WEEK = [
     { value: 6, label: 'Saturday', short: 'Sat' },
 ];
 
+const formatTime = (timeString: string): string => {
+    if (!timeString) {
+        return '-';
+    }
+
+    // Handle both "HH:MM:SS" and "HH:MM" formats
+    const timeMatch = timeString.match(/^(\d{1,2}):(\d{2})/);
+    if (!timeMatch) {
+        return timeString;
+    }
+
+    let hours = parseInt(timeMatch[1], 10);
+    const minutes = timeMatch[2];
+    const period = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+
+    return `${displayHours.toString().padStart(2, '0')}:${minutes} ${period}`;
+};
+
 export default function MySchedule() {
     const [schedules, setSchedules] = useState<Schedule[]>([]);
-    const [selectedDays, setSelectedDays] = useState<Set<number>>(new Set());
-    const [scheduleData, setScheduleData] = useState<Record<number, { start_time: string; end_time: string }>>({});
     const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
 
     useEffect(() => {
         fetch('/api/schedules', {
@@ -35,16 +52,6 @@ export default function MySchedule() {
             .then((res) => res.json())
             .then((data: Schedule[]) => {
                 setSchedules(data);
-                const days = new Set<number>(data.map((s: Schedule) => s.day_of_week));
-                setSelectedDays(days);
-                const scheduleMap: Record<number, { start_time: string; end_time: string }> = {};
-                data.forEach((s: Schedule) => {
-                    scheduleMap[s.day_of_week] = {
-                        start_time: s.start_time.substring(0, 5),
-                        end_time: s.end_time.substring(0, 5),
-                    };
-                });
-                setScheduleData(scheduleMap);
                 setLoading(false);
             })
             .catch((error) => {
@@ -53,235 +60,193 @@ export default function MySchedule() {
             });
     }, []);
 
-    const toggleDay = (day: number): void => {
-        const newSelectedDays = new Set(selectedDays);
-        if (newSelectedDays.has(day)) {
-            newSelectedDays.delete(day);
-            const newScheduleData = { ...scheduleData };
-            delete newScheduleData[day];
-            setScheduleData(newScheduleData);
-        } else {
-            newSelectedDays.add(day);
-            setScheduleData({
-                ...scheduleData,
-                [day]: {
-                    start_time: '09:00',
-                    end_time: '17:00',
-                },
-            });
-        }
-        setSelectedDays(newSelectedDays);
-    };
-
-    const updateScheduleTime = (day: number, field: 'start_time' | 'end_time', value: string): void => {
-        setScheduleData({
-            ...scheduleData,
-            [day]: {
-                ...scheduleData[day],
-                [field]: value,
-            },
-        });
-    };
-
-    const handleSubmit = async (e: React.FormEvent): Promise<void> => {
-        e.preventDefault();
-        setSaving(true);
-
-        const schedulesToSave = Array.from(selectedDays).map((day) => ({
-            day_of_week: day,
-            start_time: scheduleData[day].start_time,
-            end_time: scheduleData[day].end_time,
-        }));
-
-        try {
-            const response = await fetch('/api/schedules', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'X-CSRF-TOKEN': document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '',
-                },
-                body: JSON.stringify({ schedules: schedulesToSave }),
-            });
-
-            const data = await response.json();
-
-            if (response.ok && data.success) {
-                // Update local state with new schedules
-                const newSchedules = data.data || [];
-                setSchedules(newSchedules);
-                
-                const days = new Set<number>(newSchedules.map((s: Schedule) => s.day_of_week));
-                setSelectedDays(days);
-                
-                const scheduleMap: Record<number, { start_time: string; end_time: string }> = {};
-                newSchedules.forEach((s: Schedule) => {
-                    scheduleMap[s.day_of_week] = {
-                        start_time: s.start_time.substring(0, 5),
-                        end_time: s.end_time.substring(0, 5),
-                    };
-                });
-                setScheduleData(scheduleMap);
-
-                await Swal.fire({
-                    icon: 'success',
-                    title: 'Schedule Saved',
-                    text: 'Your work schedule has been updated successfully.',
-                    timer: 2000,
-                    showConfirmButton: false,
-                });
-            } else {
-                const errorMessage = data.message || data.errors 
-                    ? Object.values(data.errors || {}).flat().join('\n')
-                    : 'Failed to save schedule';
-                
-                await Swal.fire({
-                    icon: 'error',
-                    title: 'Error',
-                    text: errorMessage,
-                });
-            }
-        } catch (error) {
-            console.error('Error saving schedule:', error);
-            await Swal.fire({
-                icon: 'error',
-                title: 'Error',
-                text: 'Failed to save schedule. Please try again.',
-            });
-        } finally {
-            setSaving(false);
-        }
-    };
+    // Create a map of schedules by day of week
+    const scheduleMap = new Map<number, Schedule>();
+    schedules.forEach((schedule) => {
+        scheduleMap.set(schedule.day_of_week, schedule);
+    });
 
     if (loading) {
         return (
             <UserLayout>
-                <div className="flex items-center justify-center min-h-[400px]">
+                <div className="flex justify-center items-center min-h-[400px]">
                     <div className="text-center">
-                        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto"></div>
-                        <p className="text-gray-600 mt-4">Loading schedule...</p>
+                        <div className="mx-auto border-indigo-600 border-b-2 rounded-full w-12 h-12 animate-spin"></div>
+                        <p className="mt-4 text-gray-600">Loading schedule...</p>
                     </div>
                 </div>
             </UserLayout>
         );
     }
 
+    const hasSchedules = schedules.length > 0;
+
     return (
         <UserLayout>
-            <div className="max-w-3xl mx-auto space-y-6">
+            <div className="space-y-6 mx-auto max-w-4xl">
                 {/* Header */}
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-900">My Schedule</h1>
-                    <p className="text-gray-600 mt-1">Manage your work schedule and days</p>
+                    <h1 className="font-bold text-gray-900 text-3xl">My Schedule</h1>
+                    <p className="mt-1 text-gray-600">View your work schedule</p>
                 </div>
 
-                {/* Schedule Form */}
-                <form onSubmit={handleSubmit} className="bg-white rounded-xl shadow-md border border-gray-200 p-6">
-                    <div className="space-y-4">
-                        {DAYS_OF_WEEK.map((day) => {
-                            const isSelected = selectedDays.has(day.value);
-                            return (
-                                <div
-                                    key={day.value}
-                                    className={`border-2 rounded-xl p-4 transition-all duration-200 ${
-                                        isSelected
-                                            ? 'border-indigo-300 bg-indigo-50'
-                                            : 'border-gray-200 bg-white hover:border-gray-300'
-                                    }`}
-                                >
-                                    <div className="flex items-center justify-between mb-3">
-                                        <label className="flex items-center space-x-3 cursor-pointer">
-                                            <input
-                                                type="checkbox"
-                                                checked={isSelected}
-                                                onChange={() => toggleDay(day.value)}
-                                                className="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500"
-                                            />
-                                            <span className="font-semibold text-gray-900 text-lg">{day.label}</span>
-                                            <span className="text-sm text-gray-500">({day.short})</span>
-                                        </label>
-                                    </div>
+                {hasSchedules ? (
+                    <>
+                        {/* Schedule Display */}
+                        <div className="bg-white shadow-md border border-gray-200 rounded-xl overflow-hidden">
+                            <div className="bg-gradient-to-r from-indigo-500 to-indigo-600 px-6 py-4">
+                                <h2 className="font-semibold text-white text-lg">Weekly Schedule</h2>
+                            </div>
 
-                                    {isSelected && (
-                                        <div className="grid grid-cols-2 gap-4 mt-4 animate-fadeIn">
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                                    Start Time
-                                                </label>
-                                                <input
-                                                    type="time"
-                                                    value={scheduleData[day.value]?.start_time || '09:00'}
-                                                    onChange={(e) => updateScheduleTime(day.value, 'start_time', e.target.value)}
-                                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                                                    required
-                                                />
-                                            </div>
-                                            <div>
-                                                <label className="block text-sm font-medium text-gray-700 mb-2">End Time</label>
-                                                <input
-                                                    type="time"
-                                                    value={scheduleData[day.value]?.end_time || '17:00'}
-                                                    onChange={(e) => updateScheduleTime(day.value, 'end_time', e.target.value)}
-                                                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                                                    required
-                                                />
+                            <div className="divide-y divide-gray-200">
+                                {DAYS_OF_WEEK.map((day) => {
+                                    const schedule = scheduleMap.get(day.value);
+                                    const hasSchedule = schedule !== undefined;
+
+                                    return (
+                                        <div
+                                            key={day.value}
+                                            className={`px-6 py-4 transition-colors ${
+                                                hasSchedule
+                                                    ? 'bg-indigo-50/50 hover:bg-indigo-50'
+                                                    : 'bg-gray-50/50 hover:bg-gray-50'
+                                            }`}
+                                        >
+                                            <div className="flex justify-between items-center">
+                                                <div className="flex items-center space-x-4">
+                                                    <div
+                                                        className={`flex-shrink-0 w-12 h-12 rounded-lg flex items-center justify-center font-semibold text-sm ${
+                                                            hasSchedule
+                                                                ? 'bg-indigo-100 text-indigo-700'
+                                                                : 'bg-gray-200 text-gray-500'
+                                                        }`}
+                                                    >
+                                                        {day.short}
+                                                    </div>
+                                                    <div>
+                                                        <h3
+                                                            className={`font-semibold text-base ${
+                                                                hasSchedule ? 'text-gray-900' : 'text-gray-400'
+                                                            }`}
+                                                        >
+                                                            {day.label}
+                                                        </h3>
+                                                        {hasSchedule ? (
+                                                            <div className="flex items-center space-x-4 mt-1">
+                                                                <div className="flex items-center space-x-2 text-gray-600 text-sm">
+                                                                    <span className="text-gray-400">⏰</span>
+                                                                    <span>
+                                                                        {formatTime(schedule.start_time)} -{' '}
+                                                                        {formatTime(schedule.end_time)}
+                                                                    </span>
+                                                                </div>
+                                                                {schedule.break_time && schedule.break_time_hour > 0 && (
+                                                                    <div className="flex items-center space-x-2 text-gray-600 text-sm">
+                                                                        <span className="text-gray-400">☕</span>
+                                                                        <span>
+                                                                            Break: {formatTime(schedule.break_time)} (
+                                                                            {schedule.break_time_hour}
+                                                                            {schedule.break_time_hour === 1 ? ' hour' : ' hours'})
+                                                                        </span>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        ) : (
+                                                            <p className="mt-1 text-gray-400 text-sm">No schedule</p>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                {hasSchedule && (
+                                                    <div className="flex-shrink-0">
+                                                        <span className="inline-flex items-center bg-green-100 px-3 py-1 rounded-full font-medium text-green-800 text-xs">
+                                                            Scheduled
+                                                        </span>
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
 
-                    <button
-                        type="submit"
-                        disabled={saving || selectedDays.size === 0}
-                        className="w-full mt-6 bg-indigo-600 text-white py-4 px-6 rounded-lg font-semibold hover:bg-indigo-700 transition-all duration-200 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-md"
-                    >
-                        {saving ? (
-                            <span className="flex items-center justify-center">
-                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                                Saving...
-                            </span>
-                        ) : (
-                            '💾 Save Schedule'
-                        )}
-                    </button>
-                </form>
+                        {/* Summary Card */}
+                        <div className="bg-gradient-to-br from-blue-50 to-indigo-50 p-6 border border-blue-200 rounded-xl">
+                            <div className="flex items-start space-x-4">
+                                <div className="flex-shrink-0">
+                                    <div className="flex justify-center items-center bg-blue-100 rounded-lg w-12 h-12">
+                                        <span className="text-2xl">📅</span>
+                                    </div>
+                                </div>
+                                <div className="flex-1">
+                                    <h3 className="mb-2 font-semibold text-blue-900 text-lg">Schedule Summary</h3>
+                                    <div className="space-y-2 text-blue-800 text-sm">
+                                        <p>
+                                            <span className="font-medium">Working Days:</span> {schedules.length} day
+                                            {schedules.length !== 1 ? 's' : ''} per week
+                                        </p>
+                                        {schedules.length > 0 && (
+                                            <p>
+                                                <span className="font-medium">Average Hours:</span>{' '}
+                                                {(() => {
+                                                    let totalMinutes = 0;
+                                                    schedules.forEach((s) => {
+                                                        const startParts = s.start_time.split(':');
+                                                        const endParts = s.end_time.split(':');
+                                                        const startMinutes =
+                                                            parseInt(startParts[0], 10) * 60 + parseInt(startParts[1], 10);
+                                                        const endMinutes =
+                                                            parseInt(endParts[0], 10) * 60 + parseInt(endParts[1], 10);
+                                                        let dayMinutes = endMinutes - startMinutes;
+                                                        if (dayMinutes < 0) {
+                                                            dayMinutes += 24 * 60;
+                                                        }
+                                                        dayMinutes -= (s.break_time_hour || 0) * 60;
+                                                        totalMinutes += dayMinutes;
+                                                    });
+                                                    const avgHours = (totalMinutes / schedules.length / 60).toFixed(1);
+                                                    return `${avgHours} hours per day`;
+                                                })()}
+                                            </p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </>
+                ) : (
+                    /* No Schedule Message */
+                    <div className="bg-white shadow-md p-12 border border-gray-200 rounded-xl text-center">
+                        <div className="flex justify-center items-center bg-gray-100 mx-auto mb-4 rounded-full w-16 h-16">
+                            <span className="text-3xl">📋</span>
+                        </div>
+                        <h3 className="mb-2 font-semibold text-gray-900 text-xl">No Schedule Set</h3>
+                        <p className="mb-6 text-gray-600">
+                            Your schedule hasn't been set yet. Please contact your administrator to set up your work
+                            schedule.
+                        </p>
+                        <div className="inline-flex items-center bg-gray-100 px-4 py-2 rounded-lg text-gray-700 text-sm">
+                            <span className="mr-2">ℹ️</span>
+                            <span>Only administrators can create or modify schedules</span>
+                        </div>
+                    </div>
+                )}
 
                 {/* Info Card */}
-                <div className="bg-blue-50 border border-blue-200 rounded-xl p-6">
+                <div className="bg-indigo-50 p-6 border border-indigo-200 rounded-xl">
                     <div className="flex items-start space-x-3">
                         <span className="text-2xl">💡</span>
                         <div>
-                            <h3 className="font-semibold text-blue-900 mb-1">Schedule Information</h3>
-                            <p className="text-sm text-blue-800">
-                                Select the days you work and set your start and end times. Your attendance will be tracked based on this schedule.
-                                If you check in more than 15 minutes after your start time, it will be marked as late.
+                            <h3 className="mb-1 font-semibold text-indigo-900">Schedule Information</h3>
+                            <p className="text-indigo-800 text-sm">
+                                Your schedule determines your expected work hours. If you check in more than 15 minutes
+                                after your scheduled start time, it will be marked as late. To modify your schedule,
+                                please contact your administrator.
                             </p>
                         </div>
                     </div>
                 </div>
             </div>
-
-            <style>{`
-                @keyframes fadeIn {
-                    from {
-                        opacity: 0;
-                        transform: translateY(-10px);
-                    }
-                    to {
-                        opacity: 1;
-                        transform: translateY(0);
-                    }
-                }
-                .animate-fadeIn {
-                    animation: fadeIn 0.3s ease-in-out;
-                }
-            `}</style>
         </UserLayout>
     );
 }

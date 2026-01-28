@@ -5,6 +5,7 @@ namespace App\Http\Requests;
 use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Facades\Auth;
 
 class StoreScheduleRequest extends FormRequest
 {
@@ -13,7 +14,7 @@ class StoreScheduleRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return auth()->check();
+        return Auth::check();
     }
 
     /**
@@ -28,6 +29,8 @@ class StoreScheduleRequest extends FormRequest
             'schedules.*.day_of_week' => ['required', 'integer', 'min:0', 'max:6'],
             'schedules.*.start_time' => ['required', 'date_format:H:i'],
             'schedules.*.end_time' => ['required', 'date_format:H:i', 'after:schedules.*.start_time'],
+            'schedules.*.break_time' => ['nullable', 'date_format:H:i'],
+            'schedules.*.break_time_hour' => ['nullable', 'numeric', 'min:0', 'max:24'],
         ];
     }
 

@@ -11,8 +11,9 @@ interface Stats {
         total: number;
         present: number;
         late: number;
-        checked_in: number;
-        checked_out: number;
+        absent: number;
+        timed_in: number;
+        timed_out: number;
     };
     week: {
         total: number;
@@ -36,8 +37,8 @@ interface User {
 interface Attendance {
     id: number;
     date: string;
-    check_in: string | null;
-    check_out: string | null;
+    time_in: string | null;
+    time_out: string | null;
     status: string;
     user: {
         id: number;
@@ -61,7 +62,15 @@ export default function AdminDashboard({ stats, recentAttendances, topUsers }: D
     const formatTime = (timeString: string | null): string => {
         if (!timeString) return '-';
         const date = new Date(timeString);
-        return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        if (isNaN(date.getTime())) {
+            return '-';
+        }
+        // Extract time components from UTC to avoid timezone conversion issues
+        const hours = date.getUTCHours();
+        const minutes = date.getUTCMinutes();
+        const period = hours >= 12 ? 'PM' : 'AM';
+        const displayHours = hours % 12 || 12; // Convert to 12-hour format
+        return `${displayHours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')} ${period}`;
     };
 
     const getStatusColor = (status: string): string => {
@@ -70,6 +79,10 @@ export default function AdminDashboard({ stats, recentAttendances, topUsers }: D
                 return 'bg-green-100 text-green-800 border-green-200';
             case 'Late':
                 return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+            case 'Absent':
+                return 'bg-red-100 text-red-800 border-red-200';
+            case 'No Time Out':
+                return 'bg-orange-100 text-orange-800 border-orange-200';
             case 'Unscheduled':
                 return 'bg-gray-100 text-gray-800 border-gray-200';
             default:
@@ -116,24 +129,24 @@ export default function AdminDashboard({ stats, recentAttendances, topUsers }: D
         <AdminLayout>
             <div className="space-y-6">
                 {/* Welcome Section */}
-                <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl shadow-lg p-6 text-white">
-                    <h1 className="text-3xl font-bold mb-2">Welcome to Admin Dashboard</h1>
+                <div className="bg-gradient-to-r from-indigo-600 to-purple-600 shadow-lg p-6 rounded-xl text-white">
+                    <h1 className="mb-2 font-bold text-3xl">Welcome to Admin Dashboard</h1>
                     <p className="text-indigo-100">Monitor and manage your attendance system</p>
                 </div>
 
                 {/* Stats Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div className="gap-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
                     {statCards.map((card, index) => (
                         <Link
                             key={index}
                             href={card.link}
-                            className="bg-white rounded-xl shadow-md hover:shadow-xl transition-all duration-300 p-6 border border-gray-200 hover:border-indigo-300 group"
+                            className="group bg-white shadow-md hover:shadow-xl p-6 border border-gray-200 hover:border-indigo-300 rounded-xl transition-all duration-300"
                         >
-                            <div className="flex items-center justify-between">
+                            <div className="flex justify-between items-center">
                                 <div className="flex-1">
-                                    <p className="text-sm font-medium text-gray-600 mb-1">{card.title}</p>
-                                    <p className="text-3xl font-bold text-gray-900 mb-1">{card.value}</p>
-                                    <p className="text-xs text-gray-500">{card.subtitle}</p>
+                                    <p className="mb-1 font-medium text-gray-600 text-sm">{card.title}</p>
+                                    <p className="mb-1 font-bold text-gray-900 text-3xl">{card.value}</p>
+                                    <p className="text-gray-500 text-xs">{card.subtitle}</p>
                                 </div>
                                 <div className={`${card.color} w-16 h-16 rounded-xl flex items-center justify-center text-3xl group-hover:scale-110 transition-transform duration-300`}>
                                     {card.icon}
@@ -144,84 +157,86 @@ export default function AdminDashboard({ stats, recentAttendances, topUsers }: D
                 </div>
 
                 {/* Today's Quick Stats */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="bg-white rounded-xl shadow-md p-6 border border-gray-200">
-                        <h2 className="text-lg font-semibold text-gray-900 mb-4">Today's Activity</h2>
+                <div className="gap-6 grid grid-cols-1 md:grid-cols-2">
+                    <div className="bg-white shadow-md p-6 border border-gray-200 rounded-xl">
+                        <h2 className="mb-4 font-semibold text-gray-900 text-lg">Today's Activity</h2>
                         <div className="space-y-3">
-                            <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
-                                <span className="text-sm font-medium text-gray-700">Checked In</span>
-                                <span className="text-lg font-bold text-blue-600">{stats.today.checked_in}</span>
+                            <div className="flex justify-between items-center bg-blue-50 p-3 rounded-lg">
+                                <span className="font-medium text-gray-700 text-sm">Timed In</span>
+                                <span className="font-bold text-blue-600 text-lg">{stats.today.timed_in}</span>
                             </div>
-                            <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
-                                <span className="text-sm font-medium text-gray-700">Checked Out</span>
-                                <span className="text-lg font-bold text-green-600">{stats.today.checked_out}</span>
+                            <div className="flex justify-between items-center bg-green-50 p-3 rounded-lg">
+                                <span className="font-medium text-gray-700 text-sm">Timed Out</span>
+                                <span className="font-bold text-green-600 text-lg">{stats.today.timed_out}</span>
                             </div>
-                            <div className="flex items-center justify-between p-3 bg-yellow-50 rounded-lg">
-                                <span className="text-sm font-medium text-gray-700">Pending Checkout</span>
-                                <span className="text-lg font-bold text-yellow-600">
-                                    {stats.today.checked_in - stats.today.checked_out}
-                                </span>
+                            <div className="flex justify-between items-center bg-yellow-50 p-3 rounded-lg">
+                                <span className="font-medium text-gray-700 text-sm">Late</span>
+                                <span className="font-bold text-yellow-600 text-lg">{stats.today.late}</span>
+                            </div>
+                            <div className="flex justify-between items-center bg-red-50 p-3 rounded-lg">
+                                <span className="font-medium text-gray-700 text-sm">Absent</span>
+                                <span className="font-bold text-red-600 text-lg">{stats.today.absent || 0}</span>
                             </div>
                         </div>
                     </div>
 
                     {/* Top Users */}
-                    <div className="bg-white rounded-xl shadow-md p-6 border border-gray-200">
-                        <h2 className="text-lg font-semibold text-gray-900 mb-4">Top Users This Month</h2>
+                    <div className="bg-white shadow-md p-6 border border-gray-200 rounded-xl">
+                        <h2 className="mb-4 font-semibold text-gray-900 text-lg">Most Active</h2>
                         <div className="space-y-3">
                             {topUsers.length > 0 ? (
                                 topUsers.map((user, index) => (
                                     <div
                                         key={user.id}
-                                        className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                                        className="flex justify-between items-center bg-gray-50 hover:bg-gray-100 p-3 rounded-lg transition-colors"
                                     >
                                         <div className="flex items-center space-x-3">
-                                            <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-white font-semibold text-sm">
+                                            <div className="flex justify-center items-center bg-indigo-600 rounded-full w-8 h-8 font-semibold text-white text-sm">
                                                 {index + 1}
                                             </div>
                                             <div>
-                                                <p className="text-sm font-medium text-gray-900">{user.name}</p>
-                                                <p className="text-xs text-gray-500">{user.email}</p>
+                                                <p className="font-medium text-gray-900 text-sm">{user.name}</p>
+                                                <p className="text-gray-500 text-xs">{user.email}</p>
                                             </div>
                                         </div>
-                                        <span className="text-sm font-bold text-indigo-600">{user.attendances_count} days</span>
+                                        <span className="font-bold text-indigo-600 text-sm">{user.attendances_count} days</span>
                                     </div>
                                 ))
                             ) : (
-                                <p className="text-sm text-gray-500 text-center py-4">No data available</p>
+                                <p className="py-4 text-gray-500 text-sm text-center">No data available</p>
                             )}
                         </div>
                     </div>
                 </div>
 
                 {/* Recent Attendances */}
-                <div className="bg-white rounded-xl shadow-md border border-gray-200 overflow-hidden">
-                    <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-                        <h2 className="text-lg font-semibold text-gray-900">Recent Attendances</h2>
+                <div className="bg-white shadow-md border border-gray-200 rounded-xl overflow-hidden">
+                    <div className="flex justify-between items-center px-6 py-4 border-gray-200 border-b">
+                        <h2 className="font-semibold text-gray-900 text-lg">Recent Attendances</h2>
                         <Link
                             href="/admin/attendances"
-                            className="text-sm font-medium text-indigo-600 hover:text-indigo-800"
+                            className="font-medium text-indigo-600 hover:text-indigo-800 text-sm"
                         >
                             View All →
                         </Link>
                     </div>
                     <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-gray-200">
+                        <table className="divide-y divide-gray-200 min-w-full">
                             <thead className="bg-gray-50">
                                 <tr>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         User
                                     </th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         Date
                                     </th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Check In
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
+                                        Time In
                                     </th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Check Out
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
+                                        Time Out
                                     </th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         Status
                                     </th>
                                 </tr>
@@ -232,18 +247,18 @@ export default function AdminDashboard({ stats, recentAttendances, topUsers }: D
                                         <tr key={attendance.id} className="hover:bg-gray-50 transition-colors">
                                             <td className="px-6 py-4 whitespace-nowrap">
                                                 <div>
-                                                    <div className="text-sm font-medium text-gray-900">{attendance.user.name}</div>
-                                                    <div className="text-sm text-gray-500">{attendance.user.email}</div>
+                                                    <div className="font-medium text-gray-900 text-sm">{attendance.user.name}</div>
+                                                    <div className="text-gray-500 text-sm">{attendance.user.email}</div>
                                                 </div>
                                             </td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                            <td className="px-6 py-4 text-gray-900 text-sm whitespace-nowrap">
                                                 {formatDate(attendance.date)}
                                             </td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                {formatTime(attendance.check_in)}
+                                            <td className="px-6 py-4 text-gray-500 text-sm whitespace-nowrap">
+                                                {formatTime(attendance.time_in)}
                                             </td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                                {formatTime(attendance.check_out)}
+                                            <td className="px-6 py-4 text-gray-500 text-sm whitespace-nowrap">
+                                                {formatTime(attendance.time_out)}
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap">
                                                 <span
@@ -256,7 +271,7 @@ export default function AdminDashboard({ stats, recentAttendances, topUsers }: D
                                     ))
                                 ) : (
                                     <tr>
-                                        <td colSpan={5} className="px-6 py-4 text-center text-gray-500">
+                                        <td colSpan={5} className="px-6 py-4 text-gray-500 text-center">
                                             No recent attendances
                                         </td>
                                     </tr>
