@@ -1,9 +1,11 @@
 import { usePage } from '@inertiajs/react';
 import { useEffect, useState } from 'react';
+import Swal from 'sweetalert2';
 import AdminLayout from '../components/AdminLayout';
 import UserLayout from '../components/UserLayout';
 
 interface Schedule {
+    id?: number;
     day_of_week: number;
     start_time: string;
     end_time: string;
@@ -12,12 +14,14 @@ interface Schedule {
 }
 
 interface Attendance {
+    id?: number;
     date: string;
     time_in: string | null;
     time_out: string | null;
     status: string;
     total_time: string | null;
     is_overtime?: boolean;
+    user?: User;
 }
 
 interface CalendarDay {
@@ -61,8 +65,21 @@ export default function ScheduleCalendar() {
     const [currentDate, setCurrentDate] = useState(new Date());
     const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
     const [loading, setLoading] = useState(true);
-    const [, setSchedules] = useState<Schedule[]>([]);
+    const [schedules, setSchedules] = useState<Schedule[]>([]);
     const [, setAttendances] = useState<Record<string, Attendance>>({});
+    const [currentWeekAttendances, setCurrentWeekAttendances] = useState<Attendance[]>([]);
+    const [hoveredDayIndex, setHoveredDayIndex] = useState<number | null>(null);
+    const [showAttendanceModal, setShowAttendanceModal] = useState(false);
+    const [attendanceModalMode, setAttendanceModalMode] = useState<'add' | 'edit'>('add');
+    const [attendanceFormDay, setAttendanceFormDay] = useState<CalendarDay | null>(null);
+    const [addForm, setAddForm] = useState<{ user_id: string; date: string; time_in: string; time_out: string }>({
+        user_id: '',
+        date: '',
+        time_in: '',
+        time_out: '',
+    });
+    const [editForm, setEditForm] = useState<{ time_in: string; time_out: string }>({ time_in: '', time_out: '' });
+    const [savingAttendance, setSavingAttendance] = useState(false);
 
     useEffect(() => {
         if (selectedUserId) {
@@ -71,13 +88,13 @@ export default function ScheduleCalendar() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentDate, selectedUserId]);
 
-    const fetchCalendarData = async (): Promise<void> => {
+    const fetchCalendarData = async (silent = false): Promise<void> => {
         if (!selectedUserId) {
             setLoading(false);
             return;
         }
 
-        setLoading(true);
+        if (!silent) setLoading(true);
         const year = currentDate.getFullYear();
         const month = currentDate.getMonth() + 1;
 
@@ -109,6 +126,22 @@ export default function ScheduleCalendar() {
                 attendanceMap[dateStr] = att;
             });
             setAttendances(attendanceMap);
+
+            // Fetch current week attendances for "Total Hours This Week" (always accurate)
+            const today = new Date();
+            const startOfWeek = new Date(today);
+            startOfWeek.setDate(today.getDate() - today.getDay());
+            const weekStr = `${startOfWeek.getFullYear()}-${String(startOfWeek.getMonth() + 1).padStart(2, '0')}-${String(startOfWeek.getDate()).padStart(2, '0')}`;
+            const weekUrl = isAdmin && selectedUserId !== currentUserId
+                ? `/api/attendances?week=${weekStr}&user_id=${selectedUserId}`
+                : `/api/attendances?week=${weekStr}`;
+            const weekRes = await fetch(weekUrl, {
+                headers: { Accept: 'application/json' },
+                credentials: 'same-origin',
+            });
+            const weekData = await weekRes.json();
+            const weekList = weekData.data ?? weekData;
+            setCurrentWeekAttendances(Array.isArray(weekList) ? weekList : []);
 
             // Generate calendar days
             generateCalendar(year, month, schedulesData, attendanceMap);
@@ -262,36 +295,164 @@ export default function ScheduleCalendar() {
         return time.substring(0, 5);
     };
 
-    const calculateWeeklyTotalHours = (): { total: number; overtime: number } => {
-        const now = new Date();
-        const startOfWeek = new Date(now);
-        startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
-        startOfWeek.setHours(0, 0, 0, 0);
-        
-        const endOfWeek = new Date(startOfWeek);
-        endOfWeek.setDate(startOfWeek.getDate() + 6);
-        endOfWeek.setHours(23, 59, 59, 999);
+    const parseTimeToInput = (time: string | null): string => {
+        if (!time) return '';
+        if (time.includes('T') || time.match(/^\d{4}-\d{2}-\d{2}/)) {
+            const date = new Date(time);
+            if (isNaN(date.getTime())) return '';
+            const hours = date.getUTCHours();
+            const minutes = date.getUTCMinutes();
+            return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+        }
+        const m = time.match(/(\d{1,2}):(\d{2})/);
+        return m ? `${String(parseInt(m[1], 10)).padStart(2, '0')}:${m[2]}` : '';
+    };
 
-        const weekDays = calendarDays.filter((day) => {
-            const dayDate = new Date(day.date);
-            dayDate.setHours(0, 0, 0, 0);
-            return dayDate >= startOfWeek && dayDate <= endOfWeek && day.attendance?.total_time;
+    const formatDateStr = (d: Date): string => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+    };
+
+    const handleOpenAddAttendance = (day: CalendarDay): void => {
+        setAttendanceFormDay(day);
+        setAttendanceModalMode('add');
+        setAddForm({
+            user_id: selectedUserId ? String(selectedUserId) : '',
+            date: formatDateStr(day.date),
+            time_in: '',
+            time_out: '',
         });
+        setShowAttendanceModal(true);
+    };
 
+    const handleOpenEditAttendance = (day: CalendarDay): void => {
+        if (!day.attendance) return;
+        setAttendanceFormDay(day);
+        setAttendanceModalMode('edit');
+        setEditForm({
+            time_in: parseTimeToInput(day.attendance.time_in),
+            time_out: parseTimeToInput(day.attendance.time_out),
+        });
+        setShowAttendanceModal(true);
+    };
+
+    const handleCloseAttendanceModal = (): void => {
+        setShowAttendanceModal(false);
+        setAttendanceFormDay(null);
+        setAddForm({ user_id: '', date: '', time_in: '', time_out: '' });
+        setEditForm({ time_in: '', time_out: '' });
+    };
+
+    const handleSaveAddAttendance = async (): Promise<void> => {
+        if (!addForm.user_id || !addForm.date) {
+            await Swal.fire({ icon: 'error', title: 'Error', text: 'Please select a user and date' });
+            return;
+        }
+        setSavingAttendance(true);
+        const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+        try {
+            const timeInValue = addForm.time_in ? `${addForm.date}T${addForm.time_in}` : null;
+            const timeOutValue = addForm.time_out ? `${addForm.date}T${addForm.time_out}` : null;
+            const res = await fetch('/api/admin/attendances', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    user_id: parseInt(addForm.user_id),
+                    date: addForm.date,
+                    time_in: timeInValue,
+                    time_out: timeOutValue,
+                }),
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                await Swal.fire({
+                    icon: 'success',
+                    title: 'Success',
+                    text: 'Attendance recorded successfully',
+                    timer: 2000,
+                    showConfirmButton: false,
+                });
+                handleCloseAttendanceModal();
+                await fetchCalendarData(true);
+            } else {
+                throw new Error(data.message || 'Failed to record attendance');
+            }
+        } catch (err) {
+            await Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: err instanceof Error ? err.message : 'Failed to record attendance',
+            });
+        } finally {
+            setSavingAttendance(false);
+        }
+    };
+
+    const handleSaveEditAttendance = async (): Promise<void> => {
+        if (!attendanceFormDay?.attendance?.id) return;
+        setSavingAttendance(true);
+        const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+        try {
+            let dateStr = attendanceFormDay.attendance.date;
+            if (typeof dateStr === 'string') {
+                const m = dateStr.match(/^(\d{4}-\d{2}-\d{2})/);
+                dateStr = m ? m[1] : dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
+            }
+            const timeInValue = editForm.time_in?.trim() ? `${dateStr}T${editForm.time_in}` : null;
+            const timeOutValue = editForm.time_out?.trim() ? `${dateStr}T${editForm.time_out}` : null;
+            const res = await fetch(`/api/admin/attendances/${attendanceFormDay.attendance.id}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({ time_in: timeInValue, time_out: timeOutValue }),
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                await Swal.fire({
+                    icon: 'success',
+                    title: 'Success',
+                    text: 'Attendance updated successfully',
+                    timer: 2000,
+                    showConfirmButton: false,
+                });
+                handleCloseAttendanceModal();
+                await fetchCalendarData(true);
+            } else {
+                throw new Error(data.message || 'Failed to update attendance');
+            }
+        } catch (err) {
+            await Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: err instanceof Error ? err.message : 'Failed to update attendance',
+            });
+        } finally {
+            setSavingAttendance(false);
+        }
+    };
+
+    const calculateWeeklyTotalHours = (): { total: number; overtime: number } => {
         let totalHours = 0;
         let overtimeHours = 0;
 
-        weekDays.forEach((day) => {
-            if (!day.attendance?.total_time) return;
+        currentWeekAttendances.forEach((att) => {
+            if (!att.total_time) return;
 
-            // Parse total_time string: "8 Hours" or "8 Hours (Overtime: +2 Hours)"
-            const timeMatch = day.attendance.total_time.match(/([\d.]+)\s*Hours/);
+            const timeMatch = att.total_time.match(/([\d.]+)\s*Hours/);
             if (timeMatch) {
-                const hours = parseFloat(timeMatch[1]);
-                totalHours += hours;
-
-                // Check for overtime
-                const overtimeMatch = day.attendance.total_time.match(/Overtime:\s*\+([\d.]+)\s*Hours/);
+                totalHours += parseFloat(timeMatch[1]);
+                const overtimeMatch = att.total_time.match(/Overtime:\s*\+([\d.]+)\s*Hours/);
                 if (overtimeMatch) {
                     overtimeHours += parseFloat(overtimeMatch[1]);
                 }
@@ -443,17 +604,21 @@ export default function ScheduleCalendar() {
                         {/* Calendar Days */}
                         {calendarDays.map((day, index) => {
                             const isCurrentMonth = day.date.getMonth() === currentDate.getMonth();
+                            const canEditAttendance = isAdmin;
+                            const isHovered = hoveredDayIndex === index;
 
                             return (
                                 <div
                                     key={index}
-                                    className={`min-h-[120px] p-2 rounded-lg border-2 transition-all ${
+                                    className={`relative min-h-[120px] p-2 rounded-lg border-2 transition-all ${
                                         day.isToday
                                             ? 'border-indigo-500 bg-indigo-50'
                                             : isCurrentMonth
                                             ? 'border-gray-200 bg-white hover:border-gray-300'
                                             : 'border-gray-100 bg-gray-50 opacity-50'
                                     }`}
+                                    onMouseEnter={() => setHoveredDayIndex(index)}
+                                    onMouseLeave={() => setHoveredDayIndex(null)}
                                 >
                                     <div className="flex justify-between items-center mb-1">
                                         <span
@@ -467,11 +632,41 @@ export default function ScheduleCalendar() {
                                         >
                                             {day.date.getDate()}
                                         </span>
-                                        {day.attendance && (
-                                            <span className={`text-xs px-1.5 py-0.5 rounded border ${getStatusColor(day.attendance.status)}`}>
-                                                {getStatusIcon(day.attendance.status)}
-                                            </span>
-                                        )}
+                                        <div className="flex items-center gap-1">
+                                            {day.attendance && (
+                                                <span className={`text-xs px-1.5 py-0.5 rounded border ${getStatusColor(day.attendance.status)}`}>
+                                                    {getStatusIcon(day.attendance.status)}
+                                                </span>
+                                            )}
+                                            {canEditAttendance && isCurrentMonth && isHovered && (
+                                                <div className="flex gap-1" onClick={(e) => e.stopPropagation()}>
+                                                    {!day.attendance && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleOpenAddAttendance(day)}
+                                                            className="p-1 rounded bg-indigo-100 text-indigo-600 hover:bg-indigo-200 transition-colors"
+                                                            title="Add attendance"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                                                            </svg>
+                                                        </button>
+                                                    )}
+                                                    {day.attendance && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleOpenEditAttendance(day)}
+                                                            className="p-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+                                                            title="Edit attendance"
+                                                        >
+                                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                                            </svg>
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
                                     </div>
 
                                     {day.schedule && isCurrentMonth && (
@@ -523,6 +718,145 @@ export default function ScheduleCalendar() {
                         })}
                     </div>
                 </div>
+
+                {/* Add/Edit Attendance Modal */}
+                {showAttendanceModal && attendanceFormDay && (
+                    <div
+                        className="z-50 fixed inset-0 flex justify-center items-center bg-black/60 backdrop-blur-sm p-4 w-full h-full overflow-y-auto"
+                        onClick={(e) => {
+                            if (e.target === e.currentTarget) handleCloseAttendanceModal();
+                        }}
+                    >
+                        <div className="bg-white shadow-2xl rounded-2xl w-full max-w-md">
+                            <div className="p-6">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h3 className="font-semibold text-gray-900 text-xl">
+                                        {attendanceModalMode === 'add' ? 'Record Attendance' : 'Edit Attendance'}
+                                    </h3>
+                                    <button
+                                        type="button"
+                                        onClick={handleCloseAttendanceModal}
+                                        className="hover:bg-gray-100 p-1 rounded-lg text-gray-400 hover:text-gray-600 transition-colors"
+                                    >
+                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div className="space-y-4">
+                                    {attendanceModalMode === 'add' ? (
+                                        <>
+                                            <div>
+                                                <label className="block mb-2 font-medium text-gray-700 text-sm">User *</label>
+                                                <select
+                                                    value={addForm.user_id}
+                                                    onChange={(e) => setAddForm({ ...addForm, user_id: e.target.value })}
+                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                    required
+                                                >
+                                                    <option value="">Select User...</option>
+                                                    {availableUsers.map((user) => (
+                                                            <option key={user.id} value={user.id}>
+                                                                {user.name} #{user.user_id || user.id}
+                                                            </option>
+                                                        ))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="block mb-2 font-medium text-gray-700 text-sm">Date *</label>
+                                                <input
+                                                    type="date"
+                                                    value={addForm.date}
+                                                    onChange={(e) => setAddForm({ ...addForm, date: e.target.value })}
+                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                    required
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block mb-2 font-medium text-gray-700 text-sm">Time In</label>
+                                                <input
+                                                    type="time"
+                                                    value={addForm.time_in}
+                                                    onChange={(e) => setAddForm({ ...addForm, time_in: e.target.value })}
+                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block mb-2 font-medium text-gray-700 text-sm">Time Out</label>
+                                                <input
+                                                    type="time"
+                                                    value={addForm.time_out}
+                                                    onChange={(e) => setAddForm({ ...addForm, time_out: e.target.value })}
+                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                />
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div>
+                                                <label className="block mb-2 font-medium text-gray-700 text-sm">Date</label>
+                                                <div className="bg-gray-50 px-4 py-2.5 border border-gray-300 rounded-lg text-gray-900 text-sm">
+                                                    {attendanceFormDay.attendance?.date
+                                                        ? (typeof attendanceFormDay.attendance.date === 'string'
+                                                            ? attendanceFormDay.attendance.date.split('T')[0]
+                                                            : formatDateStr(attendanceFormDay.date))
+                                                        : formatDateStr(attendanceFormDay.date)}
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <label className="block mb-2 font-medium text-gray-700 text-sm">Time In</label>
+                                                <input
+                                                    type="time"
+                                                    value={editForm.time_in}
+                                                    onChange={(e) => setEditForm({ ...editForm, time_in: e.target.value })}
+                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                />
+                                            </div>
+                                            <div>
+                                                <label className="block mb-2 font-medium text-gray-700 text-sm">Time Out</label>
+                                                <input
+                                                    type="time"
+                                                    value={editForm.time_out}
+                                                    onChange={(e) => setEditForm({ ...editForm, time_out: e.target.value })}
+                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                />
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                                <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
+                                    <button
+                                        type="button"
+                                        onClick={handleCloseAttendanceModal}
+                                        disabled={savingAttendance}
+                                        className="bg-gray-100 hover:bg-gray-200 disabled:opacity-50 px-5 py-2.5 rounded-lg font-medium text-gray-700 text-sm transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    {attendanceModalMode === 'add' ? (
+                                        <button
+                                            type="button"
+                                            onClick={handleSaveAddAttendance}
+                                            disabled={savingAttendance || !addForm.user_id || !addForm.date}
+                                            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 shadow-md hover:shadow-lg px-5 py-2.5 rounded-lg font-medium text-white text-sm transition-colors"
+                                        >
+                                            {savingAttendance ? 'Saving...' : 'Record Attendance'}
+                                        </button>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={handleSaveEditAttendance}
+                                            disabled={savingAttendance}
+                                            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 shadow-md hover:shadow-lg px-5 py-2.5 rounded-lg font-medium text-white text-sm transition-colors"
+                                        >
+                                            {savingAttendance ? 'Saving...' : 'Save Changes'}
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* Legend */}
                 <div className="bg-white shadow-md p-4 border border-gray-200 rounded-xl">

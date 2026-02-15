@@ -260,9 +260,18 @@ class AttendanceController extends Controller
             $schedule = $user->schedules()->where('day_of_week', $dayOfWeek)->first();
 
             if ($schedule) {
+                // Parse start time and ensure it's in the same timezone as time_in
                 $startTime = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->start_time);
-                $minutesLate = $attendance->time_in->diffInMinutes($startTime, false);
 
+                // Ensure both times are in the same timezone for accurate comparison
+                $timeInLocal = Carbon::parse($attendance->time_in);
+                $startTimeLocal = $startTime->copy();
+
+                // diffInMinutes returns negative if calling object is after parameter
+                // So we reverse the order: startTime->diffInMinutes(timeIn) gives positive when timeIn is after startTime
+                $minutesLate = $startTimeLocal->diffInMinutes($timeInLocal, false);
+
+                // Only mark as late if they clocked in AFTER the start time (positive difference) and more than 15 minutes late
                 if ($minutesLate > 15) {
                     $attendance->status = 'Late';
                 } else {
@@ -366,29 +375,94 @@ class AttendanceController extends Controller
         ]);
 
         // Update time_in and time_out
-        if (isset($validated['time_in'])) {
-            if ($validated['time_in'] && trim($validated['time_in']) !== '') {
-                // Parse datetime-local format (YYYY-MM-DDTHH:mm)
-                // Extract time and combine with attendance date in UTC
-                $dateTime = Carbon::parse($validated['time_in']);
-                $attendance->time_in = Carbon::parse($attendance->date)->setTime($dateTime->hour, $dateTime->minute, 0)->utc();
+        // Use array_key_exists to handle null values (isset returns false for null)
+        if (array_key_exists('time_in', $validated)) {
+            $timeInValue = $validated['time_in'];
+            if ($timeInValue && trim($timeInValue) !== '') {
+                try {
+                    // Parse datetime-local format (YYYY-MM-DDTHH:mm or just HH:mm)
+                    $timeInput = trim($timeInValue);
+
+                    // If input contains 'T', it's in datetime-local format (YYYY-MM-DDTHH:mm)
+                    // Extract just the time part
+                    if (str_contains($timeInput, 'T')) {
+                        $parts = explode('T', $timeInput);
+                        if (count($parts) === 2) {
+                            $timePart = $parts[1];
+                            // Remove timezone if present (e.g., "09:32Z" or "09:32+00:00")
+                            $timePart = preg_replace('/[Z\+\-].*$/', '', $timePart);
+                            $timeComponents = explode(':', $timePart);
+                            $hour = (int) ($timeComponents[0] ?? 0);
+                            $minute = (int) ($timeComponents[1] ?? 0);
+                        } else {
+                            throw new \InvalidArgumentException('Invalid time format');
+                        }
+                    } else {
+                        // Just time format (HH:mm)
+                        $timeComponents = explode(':', $timeInput);
+                        $hour = (int) ($timeComponents[0] ?? 0);
+                        $minute = (int) ($timeComponents[1] ?? 0);
+                    }
+
+                    // $attendance->date is already a Carbon instance (cast as 'date'), so use it directly
+                    $attendance->time_in = $attendance->date->copy()->setTime($hour, $minute, 0)->utc();
+                } catch (\Exception $e) {
+                    Log::error('Error parsing time_in', [
+                        'input' => $timeInValue,
+                        'error' => $e->getMessage(),
+                    ]);
+                    throw new \InvalidArgumentException('Invalid time_in format. Expected YYYY-MM-DDTHH:mm or HH:mm');
+                }
             } else {
+                // Empty or null value - clear the time_in
                 $attendance->time_in = null;
             }
         }
 
-        if (isset($validated['time_out'])) {
-            if ($validated['time_out'] && trim($validated['time_out']) !== '') {
-                // Parse datetime-local format (YYYY-MM-DDTHH:mm)
-                // Extract time and combine with attendance date in UTC
-                $dateTime = Carbon::parse($validated['time_out']);
-                $attendance->time_out = Carbon::parse($attendance->date)->setTime($dateTime->hour, $dateTime->minute, 0)->utc();
+        if (array_key_exists('time_out', $validated)) {
+            $timeOutValue = $validated['time_out'];
+            if ($timeOutValue && trim($timeOutValue) !== '') {
+                try {
+                    // Parse datetime-local format (YYYY-MM-DDTHH:mm or just HH:mm)
+                    $timeInput = trim($timeOutValue);
 
-                // If time_out is before time_in on the same day, it's next day
-                if ($attendance->time_in && $attendance->time_out->lessThan($attendance->time_in)) {
-                    $attendance->time_out->addDay();
+                    // If input contains 'T', it's in datetime-local format (YYYY-MM-DDTHH:mm)
+                    // Extract just the time part
+                    if (str_contains($timeInput, 'T')) {
+                        $parts = explode('T', $timeInput);
+                        if (count($parts) === 2) {
+                            $timePart = $parts[1];
+                            // Remove timezone if present (e.g., "09:32Z" or "09:32+00:00")
+                            $timePart = preg_replace('/[Z\+\-].*$/', '', $timePart);
+                            $timeComponents = explode(':', $timePart);
+                            $hour = (int) ($timeComponents[0] ?? 0);
+                            $minute = (int) ($timeComponents[1] ?? 0);
+                        } else {
+                            throw new \InvalidArgumentException('Invalid time format');
+                        }
+                    } else {
+                        // Just time format (HH:mm)
+                        $timeComponents = explode(':', $timeInput);
+                        $hour = (int) ($timeComponents[0] ?? 0);
+                        $minute = (int) ($timeComponents[1] ?? 0);
+                    }
+
+                    // $attendance->date is already a Carbon instance (cast as 'date'), so use it directly
+                    $attendance->time_out = $attendance->date->copy()->setTime($hour, $minute, 0)->utc();
+
+                    // If time_out is before time_in on the same day, it's next day
+                    if ($attendance->time_in && $attendance->time_out->lessThan($attendance->time_in)) {
+                        $attendance->time_out->addDay();
+                    }
+                } catch (\Exception $e) {
+                    Log::error('Error parsing time_out', [
+                        'input' => $timeOutValue,
+                        'error' => $e->getMessage(),
+                    ]);
+                    throw new \InvalidArgumentException('Invalid time_out format. Expected YYYY-MM-DDTHH:mm or HH:mm');
                 }
             } else {
+                // Empty or null value - clear the time_out
                 $attendance->time_out = null;
             }
         }
@@ -399,9 +473,18 @@ class AttendanceController extends Controller
             $schedule = $attendance->user->schedules()->where('day_of_week', $dayOfWeek)->first();
 
             if ($schedule) {
+                // Parse start time and ensure it's in the same timezone as time_in
                 $startTime = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->start_time);
-                $minutesLate = $attendance->time_in->diffInMinutes($startTime, false);
 
+                // Ensure both times are in the same timezone for accurate comparison
+                $timeInLocal = Carbon::parse($attendance->time_in);
+                $startTimeLocal = $startTime->copy();
+
+                // diffInMinutes returns negative if calling object is after parameter
+                // So we reverse the order: startTime->diffInMinutes(timeIn) gives positive when timeIn is after startTime
+                $minutesLate = $startTimeLocal->diffInMinutes($timeInLocal, false);
+
+                // Only mark as late if they clocked in AFTER the start time (positive difference) and more than 15 minutes late
                 if ($minutesLate > 15) {
                     $attendance->status = 'Late';
                 } else {

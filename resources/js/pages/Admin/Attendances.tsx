@@ -178,10 +178,33 @@ export default function AdminAttendances({ attendances, users, filters: initialF
         try {
             const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
             
-            // Combine the attendance date with the time inputs
-            const dateStr = editingAttendance.date;
-            const timeInValue = editForm.time_in ? `${dateStr}T${editForm.time_in}` : null;
-            const timeOutValue = editForm.time_out ? `${dateStr}T${editForm.time_out}` : null;
+            // Extract just the date part (YYYY-MM-DD) from the attendance date
+            // Handle various date formats (ISO string, date object, or YYYY-MM-DD string)
+            let dateStr = editingAttendance.date;
+            if (dateStr instanceof Date) {
+                dateStr = dateStr.toISOString().split('T')[0];
+            } else if (typeof dateStr === 'string') {
+                // Extract YYYY-MM-DD from any date string format
+                const dateMatch = dateStr.match(/^(\d{4}-\d{2}-\d{2})/);
+                if (dateMatch) {
+                    dateStr = dateMatch[1];
+                } else {
+                    // Fallback: try to parse as date
+                    const date = new Date(dateStr);
+                    if (!isNaN(date.getTime())) {
+                        dateStr = date.toISOString().split('T')[0];
+                    }
+                }
+            }
+            
+            // Combine the date with the time inputs in datetime-local format (YYYY-MM-DDTHH:mm)
+            // Send null for empty values to clear the time fields
+            const timeInValue = editForm.time_in && editForm.time_in.trim() !== '' 
+                ? `${dateStr}T${editForm.time_in}` 
+                : null;
+            const timeOutValue = editForm.time_out && editForm.time_out.trim() !== '' 
+                ? `${dateStr}T${editForm.time_out}` 
+                : null;
             
             const response = await fetch(`/api/admin/attendances/${editingAttendance.id}`, {
                 method: 'PUT',

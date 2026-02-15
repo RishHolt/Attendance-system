@@ -7,6 +7,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class AttendanceController extends Controller
@@ -64,51 +65,76 @@ class AttendanceController extends Controller
             }
 
             // Get or create today's attendance
-            $attendance = Attendance::firstOrCreate(
-                [
-                    'user_id' => $user->id,
-                    'date' => $today,
-                ],
-                [
-                    'status' => 'Present',
-                ]
+            // Use database transaction to handle race conditions atomically
+            $attendance = DB::transaction(function () use ($user, $today) {
+                // Try to get existing record first
+                $attendance = Attendance::where('user_id', $user->id)
+                    ->where('date', $today->format('Y-m-d'))
+                    ->first();
+
+                // If not found, create it
+                if (! $attendance) {
+                    try {
+                        $attendance = Attendance::create([
+                            'user_id' => $user->id,
+                            'date' => $today->format('Y-m-d'),
+                            'status' => 'Present',
+                        ]);
+                    } catch (\Illuminate\Database\QueryException $e) {
+                        // Handle race condition: another request created it between our check and create
+                        $errorInfo = $e->errorInfo ?? [];
+                        $errorCode = $e->getCode();
+                        $errorMessage = $e->getMessage();
+                        $sqlState = $errorInfo[0] ?? null;
+
+                        // Check for unique constraint violation (SQLite: 19, MySQL: 23000)
+                        $isUniqueConstraint = $errorCode === 19 ||
+                                             $errorCode === '23000' ||
+                                             $sqlState === '23000' ||
+                                             str_contains($errorMessage, 'UNIQUE constraint') ||
+                                             str_contains($errorMessage, 'Integrity constraint violation') ||
+                                             str_contains($errorMessage, 'constraint failed');
+
+                        if ($isUniqueConstraint) {
+                            // Fetch the record that was just created
+                            $attendance = Attendance::where('user_id', $user->id)
+                                ->where('date', $today->format('Y-m-d'))
+                                ->first();
+
+                            if (! $attendance) {
+                                // Still not found, throw original exception
+                                throw $e;
+                            }
+                        } else {
+                            // Different error, re-throw
+                            throw $e;
+                        }
+                    }
+                }
+
+                return $attendance;
+            });
+
+            $localTimezone = 'Asia/Manila';
+            $nowLocal = Carbon::now($localTimezone);
+            
+            // Create datetime with local time components, stored in UTC
+            // This preserves the actual local clock time (e.g., 10:00 AM local stays as 10:00 AM)
+            $now = Carbon::create(
+                $nowLocal->year,
+                $nowLocal->month,
+                $nowLocal->day,
+                $nowLocal->hour,
+                $nowLocal->minute,
+                $nowLocal->second,
+                'UTC'
             );
 
-            $now = Carbon::now();
-
-            // Parse start time safely
+            // Parse start time safely using setTimeFromTimeString (more reliable)
             try {
-                // Get the start_time value - it should be a time string like "09:00:00" or "09:00"
-                $timeValue = $schedule->start_time;
-
-                // If it's already a Carbon instance (shouldn't happen, but just in case)
-                if ($timeValue instanceof Carbon) {
-                    $timeValue = $timeValue->format('H:i:s');
-                } elseif (! is_string($timeValue)) {
-                    // Try to get raw value from database if schedule is an Eloquent model
-                    if (method_exists($schedule, 'getRawOriginal')) {
-                        $timeValue = $schedule->getRawOriginal('start_time') ?? '09:00:00';
-                    } else {
-                        $timeValue = '09:00:00';
-                    }
-                }
-
-                // Clean the time value - remove any date components if present
-                $timeValue = trim($timeValue);
-
-                // Extract just the time part (HH:MM:SS or HH:MM)
-                if (preg_match('/(\d{2}:\d{2}(?::\d{2})?)/', $timeValue, $matches)) {
-                    $timeValue = $matches[1];
-                    // If time is in H:i format, add seconds
-                    if (preg_match('/^\d{2}:\d{2}$/', $timeValue)) {
-                        $timeValue .= ':00';
-                    }
-                } else {
-                    $timeValue = '09:00:00'; // Default fallback
-                }
-
-                // Create the datetime by combining today's date with the time
-                $startTime = Carbon::createFromFormat('Y-m-d H:i:s', $today->format('Y-m-d').' '.$timeValue);
+                // Use setTimeFromTimeString which handles time strings directly
+                // $schedule->start_time should be in format "HH:MM:SS" or "HH:MM"
+                $startTime = $today->copy()->setTimeFromTimeString($schedule->start_time);
             } catch (\Exception $e) {
                 $rawStartTime = 'N/A';
                 if (method_exists($schedule, 'getRawOriginal')) {
@@ -133,7 +159,15 @@ class AttendanceController extends Controller
                 $attendance->time_in = $now;
 
                 // Check if late (more than 15 minutes after start_time)
-                $minutesLate = $now->diffInMinutes($startTime, false);
+                // Ensure both times are in the same timezone for accurate comparison
+                $nowLocal = $now->copy();
+                $startTimeLocal = $startTime->copy();
+
+                // diffInMinutes returns negative if calling object is after parameter
+                // So we reverse the order: startTime->diffInMinutes(now) gives positive when now is after startTime
+                $minutesLate = $startTimeLocal->diffInMinutes($nowLocal, false);
+
+                // Only mark as late if they clocked in AFTER the start time (positive difference) and more than 15 minutes late
                 if ($minutesLate > 15) {
                     $attendance->status = 'Late';
                 } else {
@@ -180,16 +214,57 @@ class AttendanceController extends Controller
                 'message' => 'Validation failed',
                 'errors' => $e->errors(),
             ], 422);
-        } catch (\Exception $e) {
-            Log::error('Error in attendance scan', [
+        } catch (\Illuminate\Database\QueryException $e) {
+            $errorInfo = $e->errorInfo ?? [];
+            $errorCode = $e->getCode();
+            $errorMessage = $e->getMessage();
+            $sqlState = $errorInfo[0] ?? null;
+
+            // Check for unique constraint violation
+            $isUniqueConstraint = $errorCode === 19 ||
+                                 $errorCode === '23000' ||
+                                 $sqlState === '23000' ||
+                                 str_contains($errorMessage, 'UNIQUE constraint') ||
+                                 str_contains($errorMessage, 'Integrity constraint violation') ||
+                                 str_contains($errorMessage, 'constraint failed');
+
+            if ($isUniqueConstraint) {
+                // This should rarely happen now due to transaction handling, but provide friendly message
+                Log::warning('Unique constraint violation in attendance scan (should be handled by transaction)', [
+                    'error' => $e->getMessage(),
+                    'request' => $request->all(),
+                ]);
+
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Attendance record already exists for today. Please try scanning again.',
+                ], 409);
+            }
+
+            // Log other database errors with full details
+            Log::error('Database error in attendance scan', [
                 'error' => $e->getMessage(),
+                'error_code' => $errorCode,
+                'sql_state' => $sqlState,
+                'error_info' => $errorInfo,
+                'request' => $request->all(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'A database error occurred while processing your request. Please try again.',
+            ], 500);
+        } catch (\Exception $e) {
+            Log::error('Unexpected error in attendance scan', [
+                'error' => $e->getMessage(),
+                'error_type' => get_class($e),
                 'trace' => $e->getTraceAsString(),
                 'request' => $request->all(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'An error occurred while processing the scan. Please try again.',
+                'message' => 'An unexpected error occurred. Please try again.',
             ], 500);
         }
     }
@@ -240,10 +315,16 @@ class AttendanceController extends Controller
             $query->whereRaw('DATE_FORMAT(date, "%Y-%m-%d") LIKE ?', ["%{$search}%"]);
         }
 
-        $attendances = $query->orderBy('date', 'desc')->paginate(10);
+        $attendances = $request->has('month') || $request->has('week')
+            ? $query->orderBy('date', 'desc')->get()
+            : $query->orderBy('date', 'desc')->paginate(10);
+
+        $collection = $attendances instanceof \Illuminate\Pagination\LengthAwarePaginator
+            ? $attendances->getCollection()
+            : $attendances;
 
         // Add total_time calculation
-        $attendances->transform(function ($attendance) use ($targetUser) {
+        $collection->transform(function ($attendance) use ($targetUser) {
             $totalTime = null;
             $isOvertime = false;
             if ($attendance->time_in && $attendance->time_out) {

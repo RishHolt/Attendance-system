@@ -58,64 +58,98 @@ export default function Scanner() {
             const scanner = new Html5Qrcode(scanAreaId);
             scannerRef.current = scanner;
 
-            // Let html5-qrcode request camera permission directly
-            // This will trigger the browser's permission popup on mobile
-            await scanner.start(
-                { facingMode: 'environment' },
-                {
-                    fps: 10,
-                    qrbox: { width: 200, height: 200 },
-                },
-                async (decodedText) => {
-                    if (!isProcessingRef.current) {
-                        await handleScan(decodedText);
-                    }
-                },
-                (errorMessage) => {
-                    // Ignore scanning errors
+            // Try to get available cameras
+            let cameras: MediaDeviceInfo[] = [];
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                cameras = devices.filter(device => device.kind === 'videoinput');
+            } catch (e) {
+                console.warn('Could not enumerate cameras:', e);
+            }
+
+            const scanConfig = {
+                fps: 10,
+                qrbox: { width: 200, height: 200 },
+            };
+
+            const onScanSuccess = async (decodedText: string) => {
+                if (!isProcessingRef.current) {
+                    await handleScan(decodedText);
                 }
-            );
+            };
 
-            setIsScanning(true);
-            setHasPermission(true);
-        } catch (error: any) {
-            console.error('Error starting scanner:', error);
+            const onScanError = (errorMessage: string) => {
+                // Ignore scanning errors
+            };
 
-            // If environment camera fails, try user camera (front camera)
-            if (scannerRef.current && (error?.message?.includes('environment') || error?.message?.includes('not found'))) {
+            // Try different camera configurations in order of preference
+            const cameraConfigs = [
+                { facingMode: 'environment' }, // Back camera (preferred for QR scanning)
+                { facingMode: 'user' }, // Front camera
+            ];
+
+            let lastError: any = null;
+            for (const config of cameraConfigs) {
                 try {
-                    await scannerRef.current.start(
-                        { facingMode: 'user' },
-                        {
-                            fps: 10,
-                            qrbox: { width: 200, height: 200 },
-                        },
-                async (decodedText) => {
-                    if (!isProcessingRef.current) {
-                        await handleScan(decodedText);
-                    }
-                },
-                        (errorMessage) => {
-                            // Ignore scanning errors
-                        }
+                    await scanner.start(
+                        config as any,
+                        scanConfig,
+                        onScanSuccess,
+                        onScanError
                     );
                     setIsScanning(true);
                     setHasPermission(true);
-                    return;
-                } catch (fallbackError) {
-                    console.error('Fallback camera also failed:', fallbackError);
+                    return; // Success!
+                } catch (error: any) {
+                    lastError = error;
+                    console.warn(`Failed to start with config ${JSON.stringify(config)}:`, error);
+                    
+                    // If it's a permission error, don't try other cameras
+                    if (error?.message?.includes('NotAllowedError') || 
+                        error?.message?.includes('permission') || 
+                        error?.message?.includes('denied')) {
+                        break;
+                    }
+                    
+                    // Continue to next camera config
+                    continue;
                 }
             }
 
+            // If all configs failed, try without any constraints (use default camera)
+            if (!lastError?.message?.includes('NotAllowedError') && 
+                !lastError?.message?.includes('permission') && 
+                !lastError?.message?.includes('denied')) {
+                try {
+                    await scanner.start(
+                        true, // Use default camera
+                        scanConfig,
+                        onScanSuccess,
+                        onScanError
+                    );
+                    setIsScanning(true);
+                    setHasPermission(true);
+                    return; // Success with default camera!
+                } catch (defaultError: any) {
+                    lastError = defaultError;
+                    console.error('Default camera also failed:', defaultError);
+                }
+            }
+
+            // All attempts failed
             setHasPermission(false);
 
             let errorMessage = 'Please allow camera access to use the scanner.';
 
-            if (error?.message?.includes('NotAllowedError') || error?.message?.includes('permission') || error?.message?.includes('denied')) {
+            if (lastError?.message?.includes('NotAllowedError') || 
+                lastError?.message?.includes('permission') || 
+                lastError?.message?.includes('denied')) {
                 errorMessage = 'Camera permission was denied. Please allow camera access in your browser settings and try again.';
-            } else if (error?.message?.includes('NotFoundError') || error?.message?.includes('not found')) {
-                errorMessage = 'No camera found. Please make sure your device has a camera.';
-            } else if (error?.message?.includes('NotReadableError')) {
+            } else if (lastError?.message?.includes('NotFoundError') || 
+                       lastError?.message?.includes('not found') ||
+                       cameras.length === 0) {
+                errorMessage = 'No camera found. Please make sure your device has a camera and it is not being used by another application.';
+            } else if (lastError?.message?.includes('NotReadableError')) {
                 errorMessage = 'Camera is already in use by another application. Please close other apps using the camera.';
             }
 
@@ -123,6 +157,16 @@ export default function Scanner() {
                 icon: 'error',
                 title: 'Camera Access Error',
                 text: errorMessage,
+                confirmButtonText: 'OK',
+            });
+        } catch (error: any) {
+            console.error('Unexpected error starting scanner:', error);
+            setHasPermission(false);
+            
+            await Swal.fire({
+                icon: 'error',
+                title: 'Camera Access Error',
+                text: 'An unexpected error occurred while trying to access the camera. Please refresh the page and try again.',
                 confirmButtonText: 'OK',
             });
         }
