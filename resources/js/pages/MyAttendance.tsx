@@ -29,6 +29,34 @@ export default function MyAttendance() {
     });
     const [showFilters, setShowFilters] = useState(false);
 
+    const handleExportPdf = (period: 'week' | 'month' | 'year'): void => {
+        let dateValue = '';
+        if (period === 'week' && filters.week) {
+            dateValue = filters.week;
+        } else if (period === 'month' && filters.month) {
+            dateValue = filters.month + '-01';
+        } else if (period === 'year' && filters.year) {
+            dateValue = filters.year + '-01-01';
+        } else {
+            // Use current date if no filter is set
+            const now = new Date();
+            if (period === 'week') {
+                dateValue = now.toISOString().split('T')[0];
+            } else if (period === 'month') {
+                dateValue = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-01';
+            } else {
+                dateValue = now.getFullYear() + '-01-01';
+            }
+        }
+
+        const params = new URLSearchParams({
+            period,
+            date: dateValue,
+        });
+
+        window.open(`/api/attendances/export/pdf?${params.toString()}`, '_blank');
+    };
+
     const fetchAttendances = (page: number = 1): void => {
         setLoading(true);
         const params = new URLSearchParams();
@@ -225,12 +253,46 @@ export default function MyAttendance() {
                         <h1 className="font-bold text-gray-900 text-3xl">My Attendance</h1>
                         <p className="mt-1 text-gray-600">View your attendance history and records</p>
                     </div>
-                    <button
-                        onClick={() => setShowFilters(!showFilters)}
-                        className="bg-white hover:bg-gray-50 px-4 py-2 border border-gray-300 rounded-lg font-medium text-gray-700 text-sm transition-colors"
-                    >
-                        {showFilters ? 'Hide' : 'Show'} Filters
-                    </button>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => setShowFilters(!showFilters)}
+                            className="bg-white hover:bg-gray-50 px-4 py-2 border border-gray-300 rounded-lg font-medium text-gray-700 text-sm transition-colors"
+                        >
+                            {showFilters ? 'Hide' : 'Show'} Filters
+                        </button>
+                        <div className="group relative">
+                            <button
+                                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                Export PDF
+                            </button>
+                            <div className="invisible group-hover:visible right-0 z-10 absolute bg-white opacity-0 group-hover:opacity-100 shadow-lg mt-2 border border-gray-200 rounded-lg w-48 transition-all">
+                                <div className="py-1">
+                                    <button
+                                        onClick={() => handleExportPdf('week')}
+                                        className="block hover:bg-gray-100 px-4 py-2 w-full text-gray-700 text-sm text-left"
+                                    >
+                                        Export Week
+                                    </button>
+                                    <button
+                                        onClick={() => handleExportPdf('month')}
+                                        className="block hover:bg-gray-100 px-4 py-2 w-full text-gray-700 text-sm text-left"
+                                    >
+                                        Export Month
+                                    </button>
+                                    <button
+                                        onClick={() => handleExportPdf('year')}
+                                        className="block hover:bg-gray-100 px-4 py-2 w-full text-gray-700 text-sm text-left"
+                                    >
+                                        Export Year
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 {/* Filters */}
@@ -243,7 +305,7 @@ export default function MyAttendance() {
                                     type="date"
                                     value={filters.week}
                                     onChange={(e) => handleFilterChange('week', e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                             <div>
@@ -252,7 +314,7 @@ export default function MyAttendance() {
                                     type="month"
                                     value={filters.month}
                                     onChange={(e) => handleFilterChange('month', e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                             <div>
@@ -264,7 +326,7 @@ export default function MyAttendance() {
                                     placeholder="YYYY"
                                     min="2000"
                                     max="2100"
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                             <div>
@@ -274,7 +336,7 @@ export default function MyAttendance() {
                                     value={filters.search}
                                     onChange={(e) => handleFilterChange('search', e.target.value)}
                                     placeholder="YYYY-MM-DD"
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                         </div>

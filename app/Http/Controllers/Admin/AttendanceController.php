@@ -4,11 +4,15 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\Attendance;
+use App\Models\Holiday;
+use App\Models\SavedFilter;
 use App\Models\User;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -42,8 +46,8 @@ class AttendanceController extends Controller
         // Filter by week
         if ($request->has('week') && $request->week) {
             $week = Carbon::parse($request->week);
-            $startOfWeek = $week->copy()->startOfWeek();
-            $endOfWeek = $week->copy()->endOfWeek();
+            $startOfWeek = $week->copy()->startOfWeek(Carbon::SUNDAY);
+            $endOfWeek = $week->copy()->endOfWeek(Carbon::SATURDAY);
             $query->whereBetween('date', [$startOfWeek, $endOfWeek]);
         }
 
@@ -195,9 +199,15 @@ class AttendanceController extends Controller
             ->orderBy('name')
             ->get();
 
+        // Get saved filters for current user
+        $savedFilters = SavedFilter::where('user_id', Auth::id())
+            ->orderBy('name')
+            ->get();
+
         return Inertia::render('Admin/Attendances', [
             'attendances' => $attendances,
             'users' => $users,
+            'savedFilters' => $savedFilters,
             'filters' => $request->only(['start_date', 'end_date', 'user_id', 'status', 'search', 'week', 'month', 'year']),
         ]);
     }
@@ -372,6 +382,8 @@ class AttendanceController extends Controller
         $validated = $request->validate([
             'time_in' => ['nullable', 'string'],
             'time_out' => ['nullable', 'string'],
+            'notes' => ['nullable', 'string'],
+            'admin_notes' => ['nullable', 'string'],
         ]);
 
         // Update time_in and time_out
@@ -404,8 +416,9 @@ class AttendanceController extends Controller
                         $minute = (int) ($timeComponents[1] ?? 0);
                     }
 
-                    // $attendance->date is already a Carbon instance (cast as 'date'), so use it directly
-                    $attendance->time_in = $attendance->date->copy()->setTime($hour, $minute, 0)->utc();
+                    // Parse the date string to Carbon instance
+                    $dateObj = Carbon::parse($attendance->date);
+                    $attendance->time_in = $dateObj->copy()->setTime($hour, $minute, 0)->utc();
                 } catch (\Exception $e) {
                     Log::error('Error parsing time_in', [
                         'input' => $timeInValue,
@@ -447,8 +460,9 @@ class AttendanceController extends Controller
                         $minute = (int) ($timeComponents[1] ?? 0);
                     }
 
-                    // $attendance->date is already a Carbon instance (cast as 'date'), so use it directly
-                    $attendance->time_out = $attendance->date->copy()->setTime($hour, $minute, 0)->utc();
+                    // Parse the date string to Carbon instance
+                    $dateObj = Carbon::parse($attendance->date);
+                    $attendance->time_out = $dateObj->copy()->setTime($hour, $minute, 0)->utc();
 
                     // If time_out is before time_in on the same day, it's next day
                     if ($attendance->time_in && $attendance->time_out->lessThan($attendance->time_in)) {
@@ -565,12 +579,49 @@ class AttendanceController extends Controller
             }
         }
 
+        // Update notes if provided
+        if (isset($validated['notes'])) {
+            $attendance->notes = $validated['notes'];
+        }
+
+        if (isset($validated['admin_notes'])) {
+            $attendance->admin_notes = $validated['admin_notes'];
+        }
+
+        $attendance->save();
+
         // Note: total_time and is_overtime are calculated dynamically, not stored in database
         // They will be calculated when the attendance is retrieved in the index method
 
         return response()->json([
             'success' => true,
             'message' => 'Attendance updated successfully',
+            'attendance' => $attendance->load('user:id,name,email'),
+        ]);
+    }
+
+    public function updateNotes(Request $request, Attendance $attendance): JsonResponse
+    {
+        $this->checkAdmin();
+
+        $validated = $request->validate([
+            'notes' => ['nullable', 'string'],
+            'admin_notes' => ['nullable', 'string'],
+        ]);
+
+        if (isset($validated['notes'])) {
+            $attendance->notes = $validated['notes'];
+        }
+
+        if (isset($validated['admin_notes'])) {
+            $attendance->admin_notes = $validated['admin_notes'];
+        }
+
+        $attendance->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Notes updated successfully',
             'attendance' => $attendance->load('user:id,name,email'),
         ]);
     }
@@ -607,6 +658,674 @@ class AttendanceController extends Controller
         ]);
     }
 
+    public function exportPdf(Request $request)
+    {
+        $this->checkAdmin();
+
+        $validated = $request->validate([
+            'period' => ['required', 'in:week,month,year'],
+            'date' => ['required', 'string'],
+            'user_id' => ['nullable', 'integer', 'exists:users,id'],
+        ]);
+
+        $period = $validated['period'];
+        $dateInput = $validated['date'];
+        $userId = $validated['user_id'] ?? null;
+
+        // Get user
+        if ($userId) {
+            $user = User::findOrFail($userId);
+        } else {
+            // If no user_id, get first user from request or use authenticated user
+            $user = Auth::user();
+        }
+
+        // Calculate date range based on period
+        $date = Carbon::parse($dateInput);
+        $startDate = null;
+        $endDate = null;
+        $periodLabel = '';
+
+        switch ($period) {
+            case 'week':
+                // Set week to start on Sunday (0) instead of Monday (1)
+                $startDate = $date->copy()->startOfWeek(Carbon::SUNDAY);
+                $endDate = $date->copy()->endOfWeek(Carbon::SATURDAY);
+                $periodLabel = $startDate->format('M d').' - '.$endDate->format('M d, Y');
+                break;
+            case 'month':
+                $startDate = $date->copy()->startOfMonth();
+                $endDate = $date->copy()->endOfMonth();
+                $periodLabel = $date->format('F Y');
+                break;
+            case 'year':
+                $startDate = $date->copy()->startOfYear();
+                $endDate = $date->copy()->endOfYear();
+                $periodLabel = $date->format('Y');
+                break;
+        }
+
+        // Get attendances for the period
+        $query = Attendance::where('user_id', $user->id)
+            ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+            ->orderBy('date', 'asc')
+            ->orderBy('time_in', 'asc');
+
+        $attendances = $query->get();
+
+        // Calculate total_time for each attendance
+        $attendances->transform(function ($attendance) {
+            return $this->calculateAttendanceTime($attendance);
+        });
+
+        // Calculate summary statistics
+        $summary = [
+            'total_days' => $attendances->count(),
+            'present' => $attendances->where('status', 'Present')->count(),
+            'late' => $attendances->where('status', 'Late')->count(),
+            'absent' => $attendances->where('status', 'Absent')->count(),
+            'no_time_out' => $attendances->where('status', 'No Time Out')->count(),
+            'total_hours' => 0,
+            'overtime_hours' => 0,
+        ];
+
+        // Calculate total hours and overtime
+        foreach ($attendances as $attendance) {
+            if ($attendance->time_in && $attendance->time_out && $attendance->total_time) {
+                // Extract hours from total_time string (e.g., "8.5 Hours" or "8 Hours (Overtime: +1.5 Hours)")
+                if (preg_match('/(\d+\.?\d*)\s*Hours/', $attendance->total_time, $matches)) {
+                    $summary['total_hours'] += (float) $matches[1];
+                }
+                if (preg_match('/Overtime:\s*\+(\d+\.?\d*)\s*Hours/', $attendance->total_time, $matches)) {
+                    $summary['overtime_hours'] += (float) $matches[1];
+                }
+            }
+        }
+
+        $summary['total_hours'] = round($summary['total_hours'], 1);
+        $summary['overtime_hours'] = round($summary['overtime_hours'], 1);
+
+        // Generate PDF
+        $pdf = Pdf::loadView('attendance.pdf-report', [
+            'user' => $user,
+            'attendances' => $attendances,
+            'summary' => $summary,
+            'periodLabel' => $periodLabel,
+        ]);
+
+        $filename = 'attendance-report-'.strtolower($period).'-'.$date->format('Y-m-d').'-'.$user->id.'.pdf';
+
+        return $pdf->download($filename);
+    }
+
+    public function viewPdf(Request $request)
+    {
+        $validated = $request->validate([
+            'period' => ['required', 'in:week,month,year'],
+            'date' => ['required', 'string'],
+            'user_id' => ['nullable', 'integer', 'exists:users,id'],
+        ]);
+
+        $period = $validated['period'];
+        $dateInput = $validated['date'];
+        $userId = $validated['user_id'] ?? null;
+        $authUser = Auth::user();
+
+        if (! $authUser) {
+            abort(401);
+        }
+
+        // Get user
+        if ($userId) {
+            $user = User::findOrFail($userId);
+            // If not admin, only allow viewing own report
+            if ($authUser->role !== 'admin' && $authUser->id !== $user->id) {
+                abort(403);
+            }
+        } else {
+            // If no user_id, use authenticated user
+            $user = $authUser;
+        }
+
+        // Calculate date range based on period
+        $date = Carbon::parse($dateInput);
+        $startDate = null;
+        $endDate = null;
+        $periodLabel = '';
+
+        switch ($period) {
+            case 'week':
+                // Set week to start on Sunday (0) instead of Monday (1)
+                $startDate = $date->copy()->startOfWeek(Carbon::SUNDAY)->startOfDay();
+                $endDate = $date->copy()->endOfWeek(Carbon::SATURDAY)->startOfDay();
+                $periodLabel = $startDate->format('M d').' - '.$endDate->format('M d, Y');
+                break;
+            case 'month':
+                $startDate = $date->copy()->startOfMonth();
+                $endDate = $date->copy()->endOfMonth();
+                $periodLabel = $date->format('F Y');
+                break;
+            case 'year':
+                $startDate = $date->copy()->startOfYear();
+                $endDate = $date->copy()->endOfYear();
+                $periodLabel = $date->format('Y');
+                break;
+        }
+
+        // Get user schedules
+        $schedules = $user->schedules()->get()->keyBy('day_of_week');
+
+        // Get attendances for the period
+        $query = Attendance::where('user_id', $user->id)
+            ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+            ->orderBy('date', 'asc')
+            ->orderBy('time_in', 'asc');
+
+        $attendanceRecords = $query->get()->keyBy(function ($attendance) {
+            return Carbon::parse($attendance->date)->format('Y-m-d');
+        });
+
+        // For week period, generate all days (Sunday through Saturday)
+        if ($period === 'week') {
+            $allDays = collect();
+            $currentDate = $startDate->copy()->startOfDay();
+            $endDateCheck = $endDate->copy()->startOfDay();
+
+            // Generate all 7 days explicitly (Sunday = 0, Saturday = 6)
+            // Force loop to run exactly 7 times to ensure all days are included
+            $today = Carbon::today();
+            for ($i = 0; $i < 7; $i++) {
+                $dateStr = $currentDate->format('Y-m-d');
+                $dayOfWeek = $currentDate->dayOfWeek;
+                $isFuture = $currentDate->isFuture();
+
+                // Check if user has schedule for this day
+                $hasSchedule = $schedules->has($dayOfWeek);
+
+                if ($attendanceRecords->has($dateStr)) {
+                    // Attendance exists, use it
+                    $attendance = $attendanceRecords->get($dateStr);
+                    $attendance = $this->calculateAttendanceTime($attendance);
+                    // Create a new object with date as string for PDF display
+                    $attendanceObj = (object) [
+                        'date' => $dateStr,
+                        'time_in' => $attendance->time_in,
+                        'time_out' => $attendance->time_out,
+                        'status' => $attendance->status,
+                        'total_time' => $attendance->total_time,
+                        'is_overtime' => $attendance->is_overtime ?? false,
+                    ];
+                    $allDays->push($attendanceObj);
+                } elseif ($isFuture) {
+                    // Future date - show as "Upcoming" if has schedule, otherwise "No Schedule"
+                    $allDays->push((object) [
+                        'date' => $dateStr,
+                        'time_in' => null,
+                        'time_out' => null,
+                        'status' => $hasSchedule ? 'Upcoming' : 'No Schedule',
+                        'total_time' => null,
+                        'is_overtime' => false,
+                    ]);
+                } elseif ($hasSchedule) {
+                    // Past date with schedule but no attendance - mark as absent
+                    $allDays->push((object) [
+                        'date' => $dateStr,
+                        'time_in' => null,
+                        'time_out' => null,
+                        'status' => 'Absent',
+                        'total_time' => null,
+                        'is_overtime' => false,
+                    ]);
+                } else {
+                    // No schedule for this day (weekends typically)
+                    $allDays->push((object) [
+                        'date' => $dateStr,
+                        'time_in' => null,
+                        'time_out' => null,
+                        'status' => 'No Schedule',
+                        'total_time' => null,
+                        'is_overtime' => false,
+                    ]);
+                }
+
+                $currentDate->addDay()->startOfDay();
+            }
+
+            $attendances = $allDays;
+        } else {
+            // For month/year, generate all days in the period
+            $allDays = collect();
+            $currentDate = $startDate->copy()->startOfDay();
+            $endDateCheck = $endDate->copy()->startOfDay();
+
+            $today = Carbon::today();
+            while ($currentDate->lte($endDateCheck)) {
+                $dateStr = $currentDate->format('Y-m-d');
+                $dayOfWeek = $currentDate->dayOfWeek;
+                $isFuture = $currentDate->isFuture();
+
+                // Check if user has schedule for this day
+                $hasSchedule = $schedules->has($dayOfWeek);
+
+                if ($attendanceRecords->has($dateStr)) {
+                    // Attendance exists, use it
+                    $attendance = $attendanceRecords->get($dateStr);
+                    $attendance = $this->calculateAttendanceTime($attendance);
+                    // Create a new object with date as string for PDF display
+                    $attendanceObj = (object) [
+                        'date' => $dateStr,
+                        'time_in' => $attendance->time_in,
+                        'time_out' => $attendance->time_out,
+                        'status' => $attendance->status,
+                        'total_time' => $attendance->total_time,
+                        'is_overtime' => $attendance->is_overtime ?? false,
+                    ];
+                    $allDays->push($attendanceObj);
+                } elseif ($isFuture) {
+                    // Future date - show as "Upcoming" if has schedule, otherwise "No Schedule"
+                    $allDays->push((object) [
+                        'date' => $dateStr,
+                        'time_in' => null,
+                        'time_out' => null,
+                        'status' => $hasSchedule ? 'Upcoming' : 'No Schedule',
+                        'total_time' => null,
+                        'is_overtime' => false,
+                    ]);
+                } elseif ($hasSchedule) {
+                    // Past date with schedule but no attendance - mark as absent
+                    $allDays->push((object) [
+                        'date' => $dateStr,
+                        'time_in' => null,
+                        'time_out' => null,
+                        'status' => 'Absent',
+                        'total_time' => null,
+                        'is_overtime' => false,
+                    ]);
+                } else {
+                    // No schedule for this day (weekends typically)
+                    $allDays->push((object) [
+                        'date' => $dateStr,
+                        'time_in' => null,
+                        'time_out' => null,
+                        'status' => 'No Schedule',
+                        'total_time' => null,
+                        'is_overtime' => false,
+                    ]);
+                }
+
+                $currentDate->addDay()->startOfDay();
+            }
+
+            $attendances = $allDays;
+        }
+
+        // Calculate summary statistics
+        $summary = [
+            'total_days' => $attendances->count(),
+            'present' => $attendances->where('status', 'Present')->count(),
+            'late' => $attendances->where('status', 'Late')->count(),
+            'absent' => $attendances->where('status', 'Absent')->count(),
+            'no_time_out' => $attendances->where('status', 'No Time Out')->count(),
+            'no_schedule' => $attendances->where('status', 'No Schedule')->count(),
+            'upcoming' => $attendances->where('status', 'Upcoming')->count(),
+            'total_hours' => 0,
+            'overtime_hours' => 0,
+        ];
+
+        // Calculate total hours and overtime
+        foreach ($attendances as $attendance) {
+            if (isset($attendance->time_in) && $attendance->time_in && isset($attendance->time_out) && $attendance->time_out && isset($attendance->total_time) && $attendance->total_time) {
+                // Extract hours from total_time string (e.g., "8.5 Hours" or "8 Hours (Overtime: +1.5 Hours)")
+                if (preg_match('/(\d+\.?\d*)\s*Hours/', $attendance->total_time, $matches)) {
+                    $summary['total_hours'] += (float) $matches[1];
+                }
+                if (preg_match('/Overtime:\s*\+(\d+\.?\d*)\s*Hours/', $attendance->total_time, $matches)) {
+                    $summary['overtime_hours'] += (float) $matches[1];
+                }
+            }
+        }
+
+        $summary['total_hours'] = round($summary['total_hours'], 1);
+        $summary['overtime_hours'] = round($summary['overtime_hours'], 1);
+
+        // Generate PDF
+        $pdf = Pdf::loadView('attendance.pdf-excel', [
+            'user' => $user,
+            'attendances' => $attendances,
+            'summary' => $summary,
+            'periodLabel' => $periodLabel,
+            'period' => $period,
+        ]);
+
+        return $pdf->stream('attendance-report.pdf');
+    }
+
+    public function bulkExport(Request $request)
+    {
+        $this->checkAdmin();
+
+        $query = Attendance::with('user:id,name,email');
+
+        // Apply filters
+        if ($request->has('start_date') && $request->start_date) {
+            $query->whereDate('date', '>=', $request->start_date);
+        }
+
+        if ($request->has('end_date') && $request->end_date) {
+            $query->whereDate('date', '<=', $request->end_date);
+        }
+
+        if ($request->has('user_id') && $request->user_id) {
+            $query->where('user_id', $request->user_id);
+        }
+
+        if ($request->has('status') && $request->status) {
+            $query->where('status', $request->status);
+        }
+
+        if ($request->has('week') && $request->week) {
+            $week = Carbon::parse($request->week);
+            $startOfWeek = $week->copy()->startOfWeek(Carbon::SUNDAY);
+            $endOfWeek = $week->copy()->endOfWeek(Carbon::SATURDAY);
+            $query->whereBetween('date', [$startOfWeek, $endOfWeek]);
+        }
+
+        if ($request->has('month') && $request->month) {
+            $month = Carbon::parse($request->month);
+            $startOfMonth = $month->copy()->startOfMonth();
+            $endOfMonth = $month->copy()->endOfMonth();
+            $query->whereBetween('date', [$startOfMonth, $endOfMonth]);
+        }
+
+        if ($request->has('year') && $request->year) {
+            $year = (int) $request->year;
+            $query->whereYear('date', $year);
+        }
+
+        $attendances = $query->orderBy('date', 'desc')
+            ->orderBy('time_in', 'desc')
+            ->get();
+
+        $filename = 'attendances-export-'.now()->format('Y-m-d-His').'.csv';
+
+        $headers = [
+            'Content-Type' => 'text/csv',
+            'Content-Disposition' => "attachment; filename=\"{$filename}\"",
+        ];
+
+        $callback = function () use ($attendances) {
+            $file = fopen('php://output', 'w');
+
+            // Add CSV headers
+            fputcsv($file, ['Date', 'User ID', 'User Name', 'User Email', 'Time In', 'Time Out', 'Status', 'Notes']);
+
+            // Add data rows
+            foreach ($attendances as $attendance) {
+                fputcsv($file, [
+                    $attendance->date,
+                    $attendance->user_id,
+                    $attendance->user->name ?? '',
+                    $attendance->user->email ?? '',
+                    $attendance->time_in ? Carbon::parse($attendance->time_in)->format('H:i:s') : '',
+                    $attendance->time_out ? Carbon::parse($attendance->time_out)->format('H:i:s') : '',
+                    $attendance->status,
+                    $attendance->notes ?? '',
+                ]);
+            }
+
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
+    }
+
+    public function bulkImport(Request $request): JsonResponse
+    {
+        $this->checkAdmin();
+
+        $validated = $request->validate([
+            'file' => ['required', 'file', 'mimes:csv,txt', 'max:10240'], // 10MB max
+        ]);
+
+        $file = $validated['file'];
+        $path = $file->getRealPath();
+        $data = array_map('str_getcsv', file($path));
+        $header = array_shift($data); // Remove header row
+
+        $imported = 0;
+        $skipped = 0;
+        $errors = [];
+
+        foreach ($data as $index => $row) {
+            $rowNumber = $index + 2; // +2 because we removed header and arrays are 0-indexed
+
+            try {
+                // Map CSV columns: Date, User ID, User Name, User Email, Time In, Time Out, Status, Notes
+                $date = $row[0] ?? null;
+                $userId = $row[1] ?? null;
+                $timeIn = $row[4] ?? null;
+                $timeOut = $row[5] ?? null;
+                $status = $row[6] ?? 'Present';
+                $notes = $row[7] ?? null;
+
+                if (! $date || ! $userId) {
+                    $errors[] = "Row {$rowNumber}: Missing required fields (Date or User ID)";
+                    $skipped++;
+
+                    continue;
+                }
+
+                // Check if user exists
+                $user = User::find($userId);
+                if (! $user) {
+                    $errors[] = "Row {$rowNumber}: User ID {$userId} not found";
+                    $skipped++;
+
+                    continue;
+                }
+
+                // Parse date
+                $dateObj = Carbon::parse($date);
+
+                // Check if attendance already exists
+                $existing = Attendance::where('user_id', $userId)
+                    ->whereDate('date', $dateObj->format('Y-m-d'))
+                    ->first();
+
+                if ($existing) {
+                    $errors[] = "Row {$rowNumber}: Attendance already exists for user {$userId} on {$date}";
+                    $skipped++;
+
+                    continue;
+                }
+
+                // Parse times
+                $timeInObj = null;
+                if ($timeIn && trim($timeIn) !== '') {
+                    try {
+                        $timeParts = explode(':', $timeIn);
+                        $timeInObj = $dateObj->copy()->setTime(
+                            (int) ($timeParts[0] ?? 0),
+                            (int) ($timeParts[1] ?? 0),
+                            (int) ($timeParts[2] ?? 0)
+                        )->utc();
+                    } catch (\Exception $e) {
+                        $errors[] = "Row {$rowNumber}: Invalid time_in format: {$timeIn}";
+                        $skipped++;
+
+                        continue;
+                    }
+                }
+
+                $timeOutObj = null;
+                if ($timeOut && trim($timeOut) !== '') {
+                    try {
+                        $timeParts = explode(':', $timeOut);
+                        $timeOutObj = $dateObj->copy()->setTime(
+                            (int) ($timeParts[0] ?? 0),
+                            (int) ($timeParts[1] ?? 0),
+                            (int) ($timeParts[2] ?? 0)
+                        )->utc();
+
+                        // Handle next day if time_out is before time_in
+                        if ($timeInObj && $timeOutObj->lessThan($timeInObj)) {
+                            $timeOutObj->addDay();
+                        }
+                    } catch (\Exception $e) {
+                        $errors[] = "Row {$rowNumber}: Invalid time_out format: {$timeOut}";
+                        $skipped++;
+
+                        continue;
+                    }
+                }
+
+                // Create attendance record
+                Attendance::create([
+                    'user_id' => $userId,
+                    'date' => $dateObj->format('Y-m-d'),
+                    'time_in' => $timeInObj,
+                    'time_out' => $timeOutObj,
+                    'status' => $status,
+                    'notes' => $notes,
+                ]);
+
+                $imported++;
+            } catch (\Exception $e) {
+                $errors[] = "Row {$rowNumber}: ".$e->getMessage();
+                $skipped++;
+            }
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => "Import completed. Imported: {$imported}, Skipped: {$skipped}",
+            'imported' => $imported,
+            'skipped' => $skipped,
+            'errors' => $errors,
+        ]);
+    }
+
+    public function saveFilter(Request $request): JsonResponse
+    {
+        $this->checkAdmin();
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'filters' => ['required', 'array'],
+        ]);
+
+        $savedFilter = SavedFilter::create([
+            'user_id' => Auth::id(),
+            'name' => $validated['name'],
+            'filters' => $validated['filters'],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Filter saved successfully',
+            'savedFilter' => $savedFilter,
+        ]);
+    }
+
+    public function deleteFilter(SavedFilter $savedFilter): JsonResponse
+    {
+        $this->checkAdmin();
+
+        // Ensure user can only delete their own filters
+        if ($savedFilter->user_id !== Auth::id()) {
+            abort(403);
+        }
+
+        $savedFilter->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Filter deleted successfully',
+        ]);
+    }
+
+    /**
+     * Calculate total time for an attendance record
+     */
+    private function calculateAttendanceTime($attendance): Attendance
+    {
+        $totalTime = null;
+        $isOvertime = false;
+
+        if ($attendance->time_in && $attendance->time_out) {
+            $timeIn = Carbon::parse($attendance->time_in);
+            $timeOut = Carbon::parse($attendance->time_out);
+
+            // Handle case where time out is on the next day
+            $timeOutOriginal = $timeOut->copy();
+            if ($timeOut->format('Y-m-d') === $timeIn->format('Y-m-d') && $timeOut->format('H:i') < $timeIn->format('H:i')) {
+                $timeOut->addDay();
+            }
+
+            $totalMinutes = $timeIn->diffInMinutes($timeOut);
+
+            // Get schedule for this day
+            $dayOfWeek = Carbon::parse($attendance->date)->dayOfWeek;
+            $schedule = $attendance->user->schedules()->where('day_of_week', $dayOfWeek)->first();
+            if (! $schedule) {
+                $schedule = $attendance->user->schedules()->first();
+            }
+
+            // Calculate break time
+            $breakMinutes = 0;
+            if ($schedule && $schedule->break_time && $schedule->break_time_hour !== null && $schedule->break_time_hour > 0 && $totalMinutes > 0) {
+                $breakStartDateTime = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->break_time);
+                $reachedBreak = false;
+                if ($timeOut->format('Y-m-d') !== $timeIn->format('Y-m-d')) {
+                    $reachedBreak = true;
+                } elseif ($timeOutOriginal->greaterThanOrEqualTo($breakStartDateTime)) {
+                    $reachedBreak = true;
+                }
+
+                if ($reachedBreak) {
+                    $calculatedBreakMinutes = (int) ($schedule->break_time_hour * 60);
+                    $breakMinutes = min($calculatedBreakMinutes, $totalMinutes);
+                }
+            }
+
+            $workedMinutes = $totalMinutes - $breakMinutes;
+            $workedMinutes = max(0, $workedMinutes);
+            $workedHours = round($workedMinutes / 60, 1);
+
+            // Calculate scheduled hours
+            if ($schedule && $schedule->start_time && $schedule->end_time) {
+                $scheduleStart = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->start_time);
+                $scheduleEnd = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->end_time);
+                if ($scheduleEnd->lessThan($scheduleStart)) {
+                    $scheduleEnd->addDay();
+                }
+
+                $scheduledMinutes = $scheduleStart->diffInMinutes($scheduleEnd);
+                if ($schedule->break_time_hour !== null && $schedule->break_time_hour > 0) {
+                    $scheduledBreakMinutes = (int) ($schedule->break_time_hour * 60);
+                    $scheduledMinutes -= $scheduledBreakMinutes;
+                }
+
+                $scheduledHours = round($scheduledMinutes / 60, 1);
+
+                if ($workedHours > $scheduledHours) {
+                    $overtimeHours = round($workedHours - $scheduledHours, 1);
+                    $totalTime = $scheduledHours.' Hours (Overtime: +'.$overtimeHours.' Hours)';
+                    $isOvertime = true;
+                } else {
+                    $totalTime = round(min($workedHours, $scheduledHours), 1).' Hours';
+                }
+            } else {
+                $totalTime = $workedHours.' Hours';
+            }
+        }
+
+        $attendance->total_time = $totalTime;
+        $attendance->is_overtime = $isOvertime;
+
+        return $attendance;
+    }
+
     /**
      * Mark users as absent if they have a schedule but didn't scan/check in
      */
@@ -614,6 +1333,11 @@ class AttendanceController extends Controller
     {
         try {
             $users = User::where('role', '!=', 'admin')->get();
+
+            // First, backfill past dates for each user
+            $this->backfillPastDates($users, $date);
+
+            // Then check the specified date (today)
             $dayOfWeek = $date->dayOfWeek; // 0 = Sunday, 1 = Monday, ..., 6 = Saturday
 
             foreach ($users as $user) {
@@ -622,56 +1346,186 @@ class AttendanceController extends Controller
                     continue;
                 }
 
-                // Check if user has a schedule for this day
-                $schedule = $user->schedules()->where('day_of_week', $dayOfWeek)->first();
-
-                if (! $schedule) {
-                    // No schedule for this day, skip
-                    continue;
-                }
-
-                // Check if attendance record exists
-                $attendance = Attendance::where('user_id', $user->id)
-                    ->where('date', $date->format('Y-m-d'))
-                    ->first();
-
-                if ($attendance) {
-                    // Attendance record exists
-                    if ($attendance->time_out === null) {
-                        if ($attendance->time_in === null) {
-                            // No time_in and no time_out - mark as absent
-                            $attendance->status = 'Absent';
-                            $attendance->save();
-                        } else {
-                            // They have time_in but forgot to time out - mark as "No Time Out"
-                            $attendance->status = 'No Time Out';
-
-                            // Auto-extend time_out to 1 hour after scheduled end time
-                            $endTime = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->end_time);
-                            $extendedTimeOut = $endTime->copy()->addHour(); // 1 hour after scheduled end time
-
-                            // Only set if current time is past the extended time
-                            if (Carbon::now()->greaterThan($extendedTimeOut)) {
-                                $attendance->time_out = $extendedTimeOut;
-                            }
-
-                            $attendance->save();
-                        }
-                    }
-                    // If they have time_out, they completed their work day - skip
-                } else {
-                    // No attendance record exists - create absent record
-                    Attendance::create([
-                        'user_id' => $user->id,
-                        'date' => $date->format('Y-m-d'),
-                        'time_in' => null,
-                        'time_out' => null,
-                        'status' => 'Absent',
-                    ]);
-                }
+                $this->checkAndMarkAbsentForDate($user, $date, $dayOfWeek);
             }
         } catch (\Exception $e) {
             // Silently fail - don't interrupt page loading
         }
+    }
+
+    /**
+     * Backfill past dates for users from their last attendance date
+     */
+    private function backfillPastDates($users, \Carbon\Carbon $currentDate): void
+    {
+        $maxLookbackDays = config('attendance.max_lookback_days', 30);
+        $today = Carbon::today()->startOfDay();
+        $backfillStart = $today->copy()->subDays($maxLookbackDays);
+
+        foreach ($users as $user) {
+            // Get user's last attendance date
+            $lastAttendance = Attendance::where('user_id', $user->id)
+                ->orderBy('date', 'desc')
+                ->first();
+
+            if ($lastAttendance) {
+                $lastDate = Carbon::parse($lastAttendance->date)->startOfDay();
+                // Start from day after last attendance, but not before max lookback
+                $startDate = max($lastDate->copy()->addDay(), $backfillStart);
+            } else {
+                // No previous attendance, start from max lookback days ago
+                $startDate = $backfillStart;
+            }
+
+            // End date is yesterday (don't backfill today, it's handled separately)
+            $endDate = $today->copy()->subDay();
+
+            if ($startDate->greaterThan($endDate)) {
+                // No dates to backfill
+                continue;
+            }
+
+            // Iterate through each date
+            $currentCheckDate = $startDate->copy();
+            while ($currentCheckDate->lte($endDate)) {
+                $dayOfWeek = $currentCheckDate->dayOfWeek;
+                $schedule = $user->schedules()->where('day_of_week', $dayOfWeek)->first();
+
+                if ($schedule) {
+                    // Skip if this date is a holiday
+                    if ($this->isHoliday($currentCheckDate)) {
+                        continue;
+                    }
+
+                    // Check if attendance record exists for this date
+                    $attendance = Attendance::where('user_id', $user->id)
+                        ->whereDate('date', $currentCheckDate->format('Y-m-d'))
+                        ->first();
+
+                    if (! $attendance) {
+                        // Calculate scheduled end time for this date
+                        $scheduledEndTime = $this->getScheduledEndTime($currentCheckDate, $schedule);
+
+                        // Only mark as absent if the scheduled end time has passed
+                        if (Carbon::now()->greaterThan($scheduledEndTime)) {
+                            Attendance::create([
+                                'user_id' => $user->id,
+                                'date' => $currentCheckDate->format('Y-m-d'),
+                                'time_in' => null,
+                                'time_out' => null,
+                                'status' => 'Absent',
+                            ]);
+                        }
+                    }
+                }
+
+                $currentCheckDate->addDay();
+            }
+        }
+    }
+
+    /**
+     * Check and mark absent for a specific date
+     */
+    private function checkAndMarkAbsentForDate(User $user, \Carbon\Carbon $date, int $dayOfWeek): void
+    {
+        // Skip if this date is a holiday
+        if ($this->isHoliday($date)) {
+            return;
+        }
+
+        // Check if user has a schedule for this day
+        $schedule = $user->schedules()->where('day_of_week', $dayOfWeek)->first();
+
+        if (! $schedule) {
+            // No schedule for this day, skip
+            return;
+        }
+
+        // Check if attendance record exists
+        $attendance = Attendance::where('user_id', $user->id)
+            ->where('date', $date->format('Y-m-d'))
+            ->first();
+
+        if ($attendance) {
+            // Attendance record exists
+            if ($attendance->time_out === null) {
+                if ($attendance->time_in === null) {
+                    // No time_in and no time_out - mark as absent
+                    $attendance->status = 'Absent';
+                    $attendance->save();
+                } else {
+                    // They have time_in but forgot to time out - mark as "No Time Out"
+                    $attendance->status = 'No Time Out';
+
+                    // Auto-extend time_out to 1 hour after scheduled end time
+                    $endTime = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->end_time);
+                    $extendedTimeOut = $endTime->copy()->addHour(); // 1 hour after scheduled end time
+
+                    // Only set if current time is past the extended time
+                    if (Carbon::now()->greaterThan($extendedTimeOut)) {
+                        $attendance->time_out = $extendedTimeOut;
+                    }
+
+                    $attendance->save();
+                }
+            }
+            // If they have time_out, they completed their work day - skip
+        } else {
+            // No attendance record exists - check if scheduled end time has passed before marking absent
+            $scheduledEndTime = $this->getScheduledEndTime($date, $schedule);
+
+            // Only mark as absent if scheduled end time has passed
+            if (Carbon::now()->greaterThan($scheduledEndTime)) {
+                Attendance::create([
+                    'user_id' => $user->id,
+                    'date' => $date->format('Y-m-d'),
+                    'time_in' => null,
+                    'time_out' => null,
+                    'status' => 'Absent',
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Get scheduled end time for a date, handling midnight crossover
+     */
+    private function getScheduledEndTime(\Carbon\Carbon $date, $schedule): Carbon
+    {
+        $endTime = $date->copy()->setTimeFromTimeString($schedule->end_time);
+        $startTime = $date->copy()->setTimeFromTimeString($schedule->start_time);
+
+        // If end time is before start time, it means it's the next day (overnight shift)
+        if ($endTime->lessThan($startTime)) {
+            $endTime->addDay();
+        }
+
+        return $endTime;
+    }
+
+    /**
+     * Check if a date is a holiday
+     */
+    private function isHoliday(\Carbon\Carbon $date): bool
+    {
+        $dateString = $date->format('Y-m-d');
+        $monthDay = $date->format('m-d'); // For recurring holidays
+
+        // Check for exact date match
+        $exactHoliday = Holiday::whereDate('date', $dateString)->first();
+        if ($exactHoliday) {
+            return true;
+        }
+
+        // Check for recurring holidays (same month-day every year)
+        $recurringHoliday = Holiday::where('is_recurring', true)
+            ->whereRaw('DATE_FORMAT(date, "%m-%d") = ?', [$monthDay])
+            ->first();
+        if ($recurringHoliday) {
+            return true;
+        }
+
+        return false;
     }
 }

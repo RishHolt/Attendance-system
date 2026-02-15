@@ -13,3 +13,9 @@ Artisan::command('inspire', function () {
 Schedule::command('attendance:mark-absent')
     ->dailyAt('23:59')
     ->timezone('UTC');
+
+// Schedule attendance reminders to run every 15 minutes
+// This sends check-in/check-out reminders to users
+Schedule::command('attendance:send-reminders')
+    ->everyFifteenMinutes()
+    ->timezone('UTC');

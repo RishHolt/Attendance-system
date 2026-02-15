@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Attendance;
 use App\Models\User;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -117,7 +118,7 @@ class AttendanceController extends Controller
 
             $localTimezone = 'Asia/Manila';
             $nowLocal = Carbon::now($localTimezone);
-            
+
             // Create datetime with local time components, stored in UTC
             // This preserves the actual local clock time (e.g., 10:00 AM local stays as 10:00 AM)
             $now = Carbon::create(
@@ -290,8 +291,8 @@ class AttendanceController extends Controller
         // Filter by week
         if ($request->has('week') && $request->week) {
             $week = Carbon::parse($request->week);
-            $startOfWeek = $week->copy()->startOfWeek();
-            $endOfWeek = $week->copy()->endOfWeek();
+            $startOfWeek = $week->copy()->startOfWeek(Carbon::SUNDAY);
+            $endOfWeek = $week->copy()->endOfWeek(Carbon::SATURDAY);
             $query->whereBetween('date', [$startOfWeek, $endOfWeek]);
         }
 
@@ -431,5 +432,182 @@ class AttendanceController extends Controller
 
         // Return paginated response
         return response()->json($attendances);
+    }
+
+    public function exportPdf(Request $request)
+    {
+        $authUser = $request->user();
+
+        if (! $authUser) {
+            abort(401);
+        }
+
+        $validated = $request->validate([
+            'period' => ['required', 'in:week,month,year'],
+            'date' => ['required', 'string'],
+        ]);
+
+        $period = $validated['period'];
+        $dateInput = $validated['date'];
+        $user = $authUser;
+
+        // Calculate date range based on period
+        $date = Carbon::parse($dateInput);
+        $startDate = null;
+        $endDate = null;
+        $periodLabel = '';
+
+        switch ($period) {
+            case 'week':
+                // Set week to start on Sunday (0) instead of Monday (1)
+                $startDate = $date->copy()->startOfWeek(Carbon::SUNDAY);
+                $endDate = $date->copy()->endOfWeek(Carbon::SATURDAY);
+                $periodLabel = $startDate->format('M d').' - '.$endDate->format('M d, Y');
+                break;
+            case 'month':
+                $startDate = $date->copy()->startOfMonth();
+                $endDate = $date->copy()->endOfMonth();
+                $periodLabel = $date->format('F Y');
+                break;
+            case 'year':
+                $startDate = $date->copy()->startOfYear();
+                $endDate = $date->copy()->endOfYear();
+                $periodLabel = $date->format('Y');
+                break;
+        }
+
+        // Get attendances for the period
+        $query = Attendance::where('user_id', $user->id)
+            ->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')])
+            ->orderBy('date', 'asc')
+            ->orderBy('time_in', 'asc');
+
+        $attendances = $query->get();
+
+        // Calculate total_time for each attendance
+        $attendances->transform(function ($attendance) use ($user) {
+            return $this->calculateAttendanceTime($attendance, $user);
+        });
+
+        // Calculate summary statistics
+        $summary = [
+            'total_days' => $attendances->count(),
+            'present' => $attendances->where('status', 'Present')->count(),
+            'late' => $attendances->where('status', 'Late')->count(),
+            'absent' => $attendances->where('status', 'Absent')->count(),
+            'no_time_out' => $attendances->where('status', 'No Time Out')->count(),
+            'total_hours' => 0,
+            'overtime_hours' => 0,
+        ];
+
+        // Calculate total hours and overtime
+        foreach ($attendances as $attendance) {
+            if ($attendance->time_in && $attendance->time_out && $attendance->total_time) {
+                // Extract hours from total_time string
+                if (preg_match('/(\d+\.?\d*)\s*Hours/', $attendance->total_time, $matches)) {
+                    $summary['total_hours'] += (float) $matches[1];
+                }
+                if (preg_match('/Overtime:\s*\+(\d+\.?\d*)\s*Hours/', $attendance->total_time, $matches)) {
+                    $summary['overtime_hours'] += (float) $matches[1];
+                }
+            }
+        }
+
+        $summary['total_hours'] = round($summary['total_hours'], 1);
+        $summary['overtime_hours'] = round($summary['overtime_hours'], 1);
+
+        // Generate PDF
+        $pdf = Pdf::loadView('attendance.pdf-report', [
+            'user' => $user,
+            'attendances' => $attendances,
+            'summary' => $summary,
+            'periodLabel' => $periodLabel,
+        ]);
+
+        $filename = 'my-attendance-'.strtolower($period).'-'.$date->format('Y-m-d').'.pdf';
+
+        return $pdf->download($filename);
+    }
+
+    /**
+     * Calculate total time for an attendance record
+     */
+    private function calculateAttendanceTime($attendance, $user): Attendance
+    {
+        $totalTime = null;
+        $isOvertime = false;
+
+        if ($attendance->time_in && $attendance->time_out) {
+            $timeIn = Carbon::parse($attendance->time_in);
+            $timeOut = Carbon::parse($attendance->time_out);
+
+            // Handle case where time out is on the next day
+            $timeOutOriginal = $timeOut->copy();
+            if ($timeOut->format('Y-m-d') === $timeIn->format('Y-m-d') && $timeOut->format('H:i') < $timeIn->format('H:i')) {
+                $timeOut->addDay();
+            }
+
+            $totalMinutes = $timeIn->diffInMinutes($timeOut);
+
+            // Get schedule for this day
+            $dayOfWeek = Carbon::parse($attendance->date)->dayOfWeek;
+            $schedule = $user->schedules()->where('day_of_week', $dayOfWeek)->first();
+            if (! $schedule) {
+                $schedule = $user->schedules()->first();
+            }
+
+            // Calculate break time
+            $breakMinutes = 0;
+            if ($schedule && $schedule->break_time && $schedule->break_time_hour !== null && $schedule->break_time_hour > 0 && $totalMinutes > 0) {
+                $breakStartDateTime = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->break_time);
+                $reachedBreak = false;
+                if ($timeOut->format('Y-m-d') !== $timeIn->format('Y-m-d')) {
+                    $reachedBreak = true;
+                } elseif ($timeOutOriginal->greaterThanOrEqualTo($breakStartDateTime)) {
+                    $reachedBreak = true;
+                }
+
+                if ($reachedBreak) {
+                    $calculatedBreakMinutes = (int) ($schedule->break_time_hour * 60);
+                    $breakMinutes = min($calculatedBreakMinutes, $totalMinutes);
+                }
+            }
+
+            $workedMinutes = $totalMinutes - $breakMinutes;
+            $workedMinutes = max(0, $workedMinutes);
+            $workedHours = round($workedMinutes / 60, 1);
+
+            // Calculate scheduled hours
+            if ($schedule && $schedule->start_time && $schedule->end_time) {
+                $scheduleStart = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->start_time);
+                $scheduleEnd = Carbon::parse($attendance->date)->setTimeFromTimeString($schedule->end_time);
+                if ($scheduleEnd->lessThan($scheduleStart)) {
+                    $scheduleEnd->addDay();
+                }
+
+                $scheduledMinutes = $scheduleStart->diffInMinutes($scheduleEnd);
+                if ($schedule->break_time_hour !== null && $schedule->break_time_hour > 0) {
+                    $scheduledBreakMinutes = (int) ($schedule->break_time_hour * 60);
+                    $scheduledMinutes -= $scheduledBreakMinutes;
+                }
+
+                $scheduledHours = round($scheduledMinutes / 60, 1);
+
+                if ($workedHours > $scheduledHours) {
+                    $overtimeHours = round($workedHours - $scheduledHours, 1);
+                    $totalTime = $scheduledHours.' Hours (Overtime: +'.$overtimeHours.' Hours)';
+                    $isOvertime = true;
+                } else {
+                    $totalTime = round(min($workedHours, $scheduledHours), 1).' Hours';
+                }
+            } else {
+                $totalTime = $workedHours.' Hours';
+            }
+        }
+
+        $attendance->total_time = $totalTime;
+        $attendance->is_overtime = $isOvertime;
+
+        return $attendance;
     }
 }

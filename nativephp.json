@@ -1,0 +1,25 @@
+{
+  "app": {
+    "name": "Attendance System",
+    "id": "com.attendance.system",
+    "version": "1.0.0",
+    "description": "Employee Attendance Management System",
+    "author": "Your Company",
+    "url": "https://attendance-system.com"
+  },
+  "window": {
+    "width": 1280,
+    "height": 800,
+    "minWidth": 1024,
+    "minHeight": 600,
+    "resizable": true,
+    "title": "Attendance System"
+  },
+  "build": {
+    "output": "dist",
+    "platforms": ["win32", "darwin", "linux"]
+  },
+  "menu": {
+    "enabled": true
+  }
+}

@@ -83,8 +83,22 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
             ),
         },
         {
-            name: 'Schedule Calendar',
-            href: '/schedule-calendar',
+            name: 'Holiday and Events',
+            href: '/admin/holidays',
+            icon: (
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
+                    />
+                </svg>
+            ),
+        },
+        {
+            name: 'Calendar',
+            href: '/calendar',
             icon: (
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path
@@ -210,14 +224,16 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                 {/* Top Bar */}
                 <div className="top-0 z-40 sticky bg-white/80 shadow-sm backdrop-blur-md border-gray-200/50 border-b">
                     <div className="flex justify-between items-center px-6 h-16">
-                        <button
-                            onClick={() => setSidebarOpen(!sidebarOpen)}
-                            className="lg:hidden hover:bg-gray-100 p-2 rounded-lg text-gray-600 hover:text-gray-900 transition-colors"
-                        >
-                            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                            </svg>
-                        </button>
+                        <div className="flex items-center gap-3">
+                            <button
+                                onClick={() => setSidebarOpen(!sidebarOpen)}
+                                className="lg:hidden hover:bg-gray-100 p-2 rounded-lg text-gray-600 hover:text-gray-900 transition-colors"
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                                </svg>
+                            </button>
+                        </div>
                         <div className="flex-1 ml-4 lg:ml-0">
                             <h2 className="font-bold text-gray-900 text-lg">
                                 {navigation.find((item) => url === item.href || (url && url.startsWith(item.href + '/')))?.name || 'Admin'}
@@ -247,6 +263,15 @@ export default function AdminLayout({ children }: AdminLayoutProps) {
                                     </span>
                                 </div>
                             </div>
+                            <button
+                                onClick={handleLogout}
+                                className="hover:bg-gray-100 p-2 rounded-lg text-gray-600 hover:text-gray-900 transition-colors"
+                                title="Logout"
+                            >
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
                 </div>

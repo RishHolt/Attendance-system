@@ -2,6 +2,10 @@
     "$schema": "https://www.schemastore.org/package.json",
     "private": true,
     "type": "module",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/RishHolt/Attendance-system.git"
+    },
     "scripts": {
         "build": "vite build",
         "build:ssr": "vite build && vite build --ssr",

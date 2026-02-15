@@ -13,13 +13,24 @@ class AdminUserSeeder extends Seeder
      */
     public function run(): void
     {
-        User::firstOrCreate(
-            ['email' => 'admin@example.com'],
+        $adminEmail = config('admin.email');
+        $adminPassword = config('admin.password');
+        $adminName = config('admin.name');
+
+        $admin = User::firstOrCreate(
+            ['email' => $adminEmail],
             [
-                'name' => 'Admin',
-                'password' => Hash::make('password'),
+                'name' => $adminName,
+                'password' => Hash::make($adminPassword),
                 'role' => 'admin',
             ]
         );
+
+        // Always update password and name to ensure they match hardcoded values
+        $admin->update([
+            'name' => $adminName,
+            'password' => Hash::make($adminPassword),
+            'role' => 'admin',
+        ]);
     }
 }

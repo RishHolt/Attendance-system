@@ -24,11 +24,20 @@ interface Attendance {
     user?: User;
 }
 
+interface Holiday {
+    id: number;
+    name: string;
+    date: string;
+    type: 'public' | 'company';
+    is_recurring: boolean;
+}
+
 interface CalendarDay {
     date: Date;
     dayOfWeek: number;
     schedule: Schedule | null;
     attendance: Attendance | null;
+    holiday: Holiday | null;
     isToday: boolean;
     isPast: boolean;
     isFuture: boolean;
@@ -52,21 +61,27 @@ interface PageProps {
         };
     };
     users?: User[];
+    holidays?: Holiday[];
 }
 
-export default function ScheduleCalendar() {
-    const page = usePage<PageProps & { users?: User[]; [key: string]: unknown }>();
+export default function Calendar() {
+    const page = usePage<PageProps & { users?: User[]; holidays?: Holiday[]; [key: string]: unknown }>();
     const isAdmin = page.props.auth?.user?.role === 'admin';
     const Layout = isAdmin ? AdminLayout : UserLayout;
     const currentUserId = page.props.auth?.user?.id;
     const availableUsers = page.props.users || [];
+    const holidays = page.props.holidays || [];
     
-    const [selectedUserId, setSelectedUserId] = useState<number | null>(currentUserId || null);
+    // For admins, don't default to their own ID (they need to select a user)
+    // For regular users, default to their own ID
+    const [selectedUserId, setSelectedUserId] = useState<number | null>(
+        isAdmin ? null : (currentUserId || null)
+    );
     const [currentDate, setCurrentDate] = useState(new Date());
     const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
     const [loading, setLoading] = useState(true);
     const [schedules, setSchedules] = useState<Schedule[]>([]);
-    const [, setAttendances] = useState<Record<string, Attendance>>({});
+    const [attendances, setAttendances] = useState<Record<string, Attendance>>({});
     const [currentWeekAttendances, setCurrentWeekAttendances] = useState<Attendance[]>([]);
     const [hoveredDayIndex, setHoveredDayIndex] = useState<number | null>(null);
     const [showAttendanceModal, setShowAttendanceModal] = useState(false);
@@ -80,10 +95,17 @@ export default function ScheduleCalendar() {
     });
     const [editForm, setEditForm] = useState<{ time_in: string; time_out: string }>({ time_in: '', time_out: '' });
     const [savingAttendance, setSavingAttendance] = useState(false);
+    const [showExportModal, setShowExportModal] = useState(false);
+    const [exportForm, setExportForm] = useState<{ user_id: string; period: 'week' | 'month' | 'year'; date: string }>({
+        user_id: '',
+        period: 'month',
+        date: new Date().toISOString().split('T')[0],
+    });
 
     useEffect(() => {
         if (selectedUserId) {
             fetchCalendarData();
+            setExportForm(prev => ({ ...prev, user_id: selectedUserId.toString() }));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [currentDate, selectedUserId]);
@@ -152,6 +174,34 @@ export default function ScheduleCalendar() {
         }
     };
 
+    const getHolidayForDate = (date: Date): Holiday | null => {
+        const year = date.getFullYear();
+        const month = date.getMonth() + 1;
+        const day = date.getDate();
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+        // Check for exact date match
+        const exactMatch = holidays.find((h) => {
+            const holidayDate = new Date(h.date);
+            return holidayDate.getFullYear() === year && 
+                   holidayDate.getMonth() + 1 === month && 
+                   holidayDate.getDate() === day;
+        });
+
+        if (exactMatch) {
+            return exactMatch;
+        }
+
+        // Check for recurring holidays (same month and day, different year)
+        const recurringMatch = holidays.find((h) => {
+            if (!h.is_recurring) return false;
+            const holidayDate = new Date(h.date);
+            return holidayDate.getMonth() + 1 === month && holidayDate.getDate() === day;
+        });
+
+        return recurringMatch || null;
+    };
+
     const generateCalendar = (year: number, month: number, schedules: Schedule[], attendancesMap: Record<string, Attendance>): void => {
         const firstDay = new Date(year, month - 1, 1);
         const lastDay = new Date(year, month, 0);
@@ -171,6 +221,7 @@ export default function ScheduleCalendar() {
                 dayOfWeek: date.getDay(),
                 schedule: null,
                 attendance: null,
+                holiday: getHolidayForDate(date),
                 isToday: false,
                 isPast: date < today,
                 isFuture: date > today,
@@ -188,6 +239,7 @@ export default function ScheduleCalendar() {
             const dateStr = `${yearStr}-${monthStr}-${dayStr}`;
             const schedule = schedules.find((s) => s.day_of_week === dayOfWeek) || null;
             const attendance = attendancesMap[dateStr] || null;
+            const holiday = getHolidayForDate(date);
 
             const dateOnly = new Date(date);
             dateOnly.setHours(0, 0, 0, 0);
@@ -198,6 +250,7 @@ export default function ScheduleCalendar() {
                 dayOfWeek,
                 schedule,
                 attendance,
+                holiday,
                 isToday: dateOnly.getTime() === todayOnly.getTime(),
                 isPast: dateOnly < todayOnly,
                 isFuture: dateOnly > todayOnly,
@@ -215,6 +268,7 @@ export default function ScheduleCalendar() {
                 dayOfWeek: date.getDay(),
                 schedule: null,
                 attendance: null,
+                holiday: getHolidayForDate(dateOnly),
                 isToday: false,
                 isPast: false,
                 isFuture: true,
@@ -442,19 +496,53 @@ export default function ScheduleCalendar() {
         }
     };
 
-    const calculateWeeklyTotalHours = (): { total: number; overtime: number } => {
+    const calculateMonthlyTotalHours = (): { total: number; overtime: number } => {
+        // Calculate current month boundaries based on the viewed month (currentDate)
+        const viewedMonth = new Date(currentDate);
+        const startOfMonth = new Date(viewedMonth.getFullYear(), viewedMonth.getMonth(), 1);
+        startOfMonth.setHours(0, 0, 0, 0);
+        
+        const endOfMonth = new Date(viewedMonth.getFullYear(), viewedMonth.getMonth() + 1, 0);
+        endOfMonth.setHours(23, 59, 59, 999);
+
+        // Use the attendanceMap which contains all attendances for the viewed month
         let totalHours = 0;
         let overtimeHours = 0;
 
-        currentWeekAttendances.forEach((att) => {
-            if (!att.total_time) return;
+        Object.values(attendances).forEach((att) => {
+            if (!att || !att.total_time) return;
 
-            const timeMatch = att.total_time.match(/([\d.]+)\s*Hours/);
-            if (timeMatch) {
-                totalHours += parseFloat(timeMatch[1]);
-                const overtimeMatch = att.total_time.match(/Overtime:\s*\+([\d.]+)\s*Hours/);
-                if (overtimeMatch) {
-                    overtimeHours += parseFloat(overtimeMatch[1]);
+            // Parse date string (could be YYYY-MM-DD or ISO format)
+            let attendanceDate: Date;
+            if (typeof att.date === 'string') {
+                // If it's a date string like "2026-02-16", parse it directly
+                if (att.date.includes('T')) {
+                    attendanceDate = new Date(att.date);
+                } else {
+                    // Parse YYYY-MM-DD format
+                    const dateStr = att.date.includes('T') ? att.date.split('T')[0] : att.date;
+                    const [year, month, day] = dateStr.split('-').map(Number);
+                    attendanceDate = new Date(year, month - 1, day);
+                }
+            } else {
+                attendanceDate = new Date(att.date);
+            }
+            
+            attendanceDate.setHours(0, 0, 0, 0);
+            
+            // Check if attendance is within the viewed month
+            const dateTime = attendanceDate.getTime();
+            const startTime = startOfMonth.getTime();
+            const endTime = endOfMonth.getTime();
+            
+            if (dateTime >= startTime && dateTime <= endTime) {
+                const timeMatch = att.total_time.match(/([\d.]+)\s*Hours/);
+                if (timeMatch) {
+                    totalHours += parseFloat(timeMatch[1]);
+                    const overtimeMatch = att.total_time.match(/Overtime:\s*\+([\d.]+)\s*Hours/);
+                    if (overtimeMatch) {
+                        overtimeHours += parseFloat(overtimeMatch[1]);
+                    }
                 }
             }
         });
@@ -468,7 +556,7 @@ export default function ScheduleCalendar() {
                 <div className="space-y-6">
                     <div className="flex justify-between items-center">
                         <div>
-                            <h1 className="font-bold text-gray-900 text-3xl">Schedule Calendar</h1>
+                            <h1 className="font-bold text-gray-900 text-3xl">Calendar</h1>
                             <p className="mt-1 text-gray-600">View schedule and attendance in calendar format</p>
                         </div>
                         {isAdmin && availableUsers.length > 0 && (
@@ -489,7 +577,7 @@ export default function ScheduleCalendar() {
                     <div className="bg-white shadow-md p-12 border border-gray-200 rounded-xl text-center">
                         <div className="mb-4 text-6xl">📅</div>
                         <h2 className="mb-2 font-semibold text-gray-900 text-xl">Select a User</h2>
-                        <p className="text-gray-600">Please select a user from the dropdown above to view their schedule calendar</p>
+                        <p className="text-gray-600">Please select a user from the dropdown above to view their Calendar</p>
                     </div>
                 </div>
             </Layout>
@@ -515,7 +603,7 @@ export default function ScheduleCalendar() {
                 {/* Header */}
                 <div className="flex justify-between items-center">
                     <div>
-                        <h1 className="font-bold text-gray-900 text-3xl">Schedule Calendar</h1>
+                        <h1 className="font-bold text-gray-900 text-3xl">Calendar</h1>
                         <p className="mt-1 text-gray-600">View schedule and attendance in calendar format</p>
                     </div>
                     <div className="flex items-center space-x-3">
@@ -534,25 +622,34 @@ export default function ScheduleCalendar() {
                             </select>
                         )}
                         <button
+                            onClick={() => setShowExportModal(true)}
+                            className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
+                        >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span>View Report</span>
+                        </button>
+                        <button
                             onClick={goToToday}
-                            className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
+                            className="bg-gray-600 hover:bg-gray-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
                         >
                             Today
                         </button>
                     </div>
                 </div>
 
-                {/* Weekly Summary */}
+                {/* Monthly Summary */}
                 <div className="bg-gradient-to-br from-indigo-50 to-blue-50 shadow-md p-6 border border-indigo-200 rounded-xl">
                     <div className="flex justify-between items-center">
                         <div>
-                            <h3 className="mb-1 font-semibold text-indigo-900 text-lg">Total Hours This Week</h3>
-                            <p className="text-indigo-700 text-sm">Sunday - Saturday</p>
+                            <h3 className="mb-1 font-semibold text-indigo-900 text-lg">Total Hours This Month</h3>
+                            <p className="text-indigo-700 text-sm">{MONTHS[currentDate.getMonth()]} {currentDate.getFullYear()}</p>
                         </div>
                         <div className="text-right">
                             <p className="font-bold text-indigo-900 text-3xl">
                                 {(() => {
-                                    const { total, overtime } = calculateWeeklyTotalHours();
+                                    const { total, overtime } = calculateMonthlyTotalHours();
                                     if (overtime > 0) {
                                         return (
                                             <span>
@@ -644,7 +741,7 @@ export default function ScheduleCalendar() {
                                                         <button
                                                             type="button"
                                                             onClick={() => handleOpenAddAttendance(day)}
-                                                            className="p-1 rounded bg-indigo-100 text-indigo-600 hover:bg-indigo-200 transition-colors"
+                                                            className="bg-indigo-100 hover:bg-indigo-200 p-1 rounded text-indigo-600 transition-colors"
                                                             title="Add attendance"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -656,7 +753,7 @@ export default function ScheduleCalendar() {
                                                         <button
                                                             type="button"
                                                             onClick={() => handleOpenEditAttendance(day)}
-                                                            className="p-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+                                                            className="bg-gray-100 hover:bg-gray-200 p-1 rounded text-gray-600 transition-colors"
                                                             title="Edit attendance"
                                                         >
                                                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -710,7 +807,17 @@ export default function ScheduleCalendar() {
                                         </div>
                                     )}
 
-                                    {!day.schedule && isCurrentMonth && !day.attendance && (
+                                    {day.holiday && isCurrentMonth && (
+                                        <div className={`mt-2 px-2 py-1 rounded text-xs font-medium ${
+                                            day.holiday.type === 'public' 
+                                                ? 'bg-blue-100 text-blue-800' 
+                                                : 'bg-purple-100 text-purple-800'
+                                        }`}>
+                                            🎉 {day.holiday.name}
+                                        </div>
+                                    )}
+
+                                    {!day.schedule && isCurrentMonth && !day.attendance && !day.holiday && (
                                         <div className="mt-2 text-gray-400 text-xs">No schedule</div>
                                     )}
                                 </div>
@@ -768,7 +875,7 @@ export default function ScheduleCalendar() {
                                                     type="date"
                                                     value={addForm.date}
                                                     onChange={(e) => setAddForm({ ...addForm, date: e.target.value })}
-                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                     required
                                                 />
                                             </div>
@@ -778,7 +885,7 @@ export default function ScheduleCalendar() {
                                                     type="time"
                                                     value={addForm.time_in}
                                                     onChange={(e) => setAddForm({ ...addForm, time_in: e.target.value })}
-                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                 />
                                             </div>
                                             <div>
@@ -787,7 +894,7 @@ export default function ScheduleCalendar() {
                                                     type="time"
                                                     value={addForm.time_out}
                                                     onChange={(e) => setAddForm({ ...addForm, time_out: e.target.value })}
-                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                 />
                                             </div>
                                         </>
@@ -809,7 +916,7 @@ export default function ScheduleCalendar() {
                                                     type="time"
                                                     value={editForm.time_in}
                                                     onChange={(e) => setEditForm({ ...editForm, time_in: e.target.value })}
-                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                 />
                                             </div>
                                             <div>
@@ -818,13 +925,13 @@ export default function ScheduleCalendar() {
                                                     type="time"
                                                     value={editForm.time_out}
                                                     onChange={(e) => setEditForm({ ...editForm, time_out: e.target.value })}
-                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                 />
                                             </div>
                                         </>
                                     )}
                                 </div>
-                                <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-200">
+                                <div className="flex justify-end gap-3 mt-6 pt-4 border-gray-200 border-t">
                                     <button
                                         type="button"
                                         onClick={handleCloseAttendanceModal}
@@ -888,6 +995,96 @@ export default function ScheduleCalendar() {
                         </div>
                     </div>
                 </div>
+
+                {/* Export Modal */}
+                {showExportModal && (
+                    <div className="z-50 fixed inset-0 flex justify-center items-center bg-black/50 backdrop-blur-sm">
+                        <div className="bg-white shadow-2xl mx-4 rounded-xl w-full max-w-md">
+                            <div className="flex justify-between items-center p-6 border-gray-200 border-b">
+                                <h2 className="font-bold text-gray-900 text-xl">View Attendance Report</h2>
+                                <button
+                                    onClick={() => setShowExportModal(false)}
+                                    className="text-gray-400 hover:text-gray-600 transition-colors"
+                                >
+                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                </button>
+                            </div>
+                            <div className="space-y-4 p-6">
+                                {isAdmin && availableUsers.length > 0 && (
+                                    <div>
+                                        <label className="block mb-2 font-medium text-gray-700 text-sm">Select User</label>
+                                        <select
+                                            value={exportForm.user_id}
+                                            onChange={(e) => setExportForm({ ...exportForm, user_id: e.target.value })}
+                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full"
+                                        >
+                                            <option value="">Select User...</option>
+                                            {availableUsers.map((user) => (
+                                                <option key={user.id} value={user.id}>
+                                                    {user.name} #{user.user_id || user.id}
+                                                </option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
+                                <div>
+                                    <label className="block mb-2 font-medium text-gray-700 text-sm">Period</label>
+                                    <select
+                                        value={exportForm.period}
+                                        onChange={(e) => setExportForm({ ...exportForm, period: e.target.value as 'week' | 'month' | 'year' })}
+                                        className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full"
+                                    >
+                                        <option value="week">Week</option>
+                                        <option value="month">Month</option>
+                                        <option value="year">Year</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block mb-2 font-medium text-gray-700 text-sm">Date</label>
+                                    <input
+                                        type="date"
+                                        value={exportForm.date}
+                                        onChange={(e) => setExportForm({ ...exportForm, date: e.target.value })}
+                                        className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full"
+                                    />
+                                </div>
+                            </div>
+                            <div className="flex justify-end gap-3 p-6 border-gray-200 border-t">
+                                <button
+                                    onClick={() => setShowExportModal(false)}
+                                    className="bg-gray-100 hover:bg-gray-200 px-5 py-2.5 rounded-lg font-medium text-gray-700 text-sm transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        // For admins, require user selection if users are available
+                                        if (isAdmin && availableUsers.length > 0 && !exportForm.user_id) {
+                                            Swal.fire({ icon: 'error', title: 'Error', text: 'Please select a user' });
+                                            return;
+                                        }
+                                        const params = new URLSearchParams({
+                                            period: exportForm.period,
+                                            date: exportForm.date,
+                                        });
+                                        // For non-admin users, don't send user_id (backend will use authenticated user)
+                                        // For admin users, send user_id if selected
+                                        if (isAdmin && exportForm.user_id) {
+                                            params.append('user_id', exportForm.user_id);
+                                        }
+                                        window.open(`/api/admin/attendances/view/pdf?${params.toString()}`, '_blank');
+                                        setShowExportModal(false);
+                                    }}
+                                    className="bg-indigo-600 hover:bg-indigo-700 px-5 py-2.5 rounded-lg font-medium text-white text-sm transition-colors"
+                                >
+                                    View Report
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </div>
         </Layout>
     );

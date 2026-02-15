@@ -739,7 +739,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                         type="time"
                                                         value={defaultTime.start_time}
                                                         onChange={(e) => setDefaultTime({ ...defaultTime, start_time: e.target.value })}
-                                                        className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
+                                                        className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
                                                     />
                                                 </div>
                                                 <div>
@@ -748,7 +748,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                         type="time"
                                                         value={defaultTime.end_time}
                                                         onChange={(e) => setDefaultTime({ ...defaultTime, end_time: e.target.value })}
-                                                        className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
+                                                        className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
                                                     />
                                                 </div>
                                                 <div>
@@ -757,7 +757,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                         type="time"
                                                         value={defaultTime.break_time}
                                                         onChange={(e) => setDefaultTime({ ...defaultTime, break_time: e.target.value })}
-                                                        className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
+                                                        className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
                                                     />
                                                 </div>
                                                 <div>
@@ -769,7 +769,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                         max="24"
                                                         value={defaultTime.break_time_hour}
                                                         onChange={(e) => setDefaultTime({ ...defaultTime, break_time_hour: parseFloat(e.target.value) || 1 })}
-                                                        className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
+                                                        className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full text-sm"
                                                     />
                                                 </div>
                                             </div>
@@ -817,7 +817,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                                     type="time"
                                                                     value={scheduleData[day.value]?.start_time || defaultTime.start_time}
                                                                     onChange={(e) => updateScheduleTime(day.value, 'start_time', e.target.value)}
-                                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                                     required
                                                                 />
                                                             </div>
@@ -827,7 +827,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                                     type="time"
                                                                     value={scheduleData[day.value]?.end_time || defaultTime.end_time}
                                                                     onChange={(e) => updateScheduleTime(day.value, 'end_time', e.target.value)}
-                                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                                     required
                                                                 />
                                                             </div>
@@ -837,7 +837,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                                     type="time"
                                                                     value={scheduleData[day.value]?.break_time || defaultTime.break_time}
                                                                     onChange={(e) => updateScheduleTime(day.value, 'break_time', e.target.value)}
-                                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                                 />
                                                             </div>
                                                             <div>
@@ -849,7 +849,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                                                     max="24"
                                                                     value={scheduleData[day.value]?.break_time_hour || defaultTime.break_time_hour}
                                                                     onChange={(e) => updateScheduleTime(day.value, 'break_time_hour', parseFloat(e.target.value) || 1)}
-                                                                    className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                                                    className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                                                 />
                                                             </div>
                                                         </div>
@@ -939,7 +939,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="text"
                                             value={createForm.name}
                                             onChange={(e) => setCreateForm({ ...createForm, name: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             required
                                         />
                                     </div>
@@ -949,7 +949,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="email"
                                             value={createForm.email}
                                             onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             required
                                         />
                                     </div>
@@ -970,7 +970,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="password"
                                             value={createForm.password}
                                             onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             required
                                         />
                                     </div>
@@ -980,7 +980,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="password"
                                             value={createForm.password_confirmation}
                                             onChange={(e) => setCreateForm({ ...createForm, password_confirmation: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             required
                                         />
                                     </div>
@@ -1043,7 +1043,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="text"
                                             value={editForm.name}
                                             onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                         />
                                     </div>
                                     <div>
@@ -1052,7 +1052,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="email"
                                             value={editForm.email}
                                             onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                         />
                                     </div>
                                     <div>
@@ -1074,7 +1074,7 @@ export default function Users({ users: initialUsers }: UsersPageProps) {
                                             type="password"
                                             value={editForm.password}
                                             onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
-                                            className="px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
+                                            className="bg-white px-4 py-2.5 border border-gray-300 focus:border-indigo-500 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 w-full transition-colors"
                                             placeholder="New password"
                                         />
                                     </div>

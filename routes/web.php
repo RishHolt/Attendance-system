@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Admin\AttendanceController as AdminAttendanceController;
 use App\Http\Controllers\Admin\DashboardController;
+use App\Http\Controllers\Admin\HolidayController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\AuthController;
@@ -66,7 +67,7 @@ Route::middleware('auth')->group(function () {
         return Inertia::render('MyAttendance');
     })->name('my-attendance');
 
-    Route::get('/schedule-calendar', function () {
+    Route::get('/calendar', function () {
         $users = [];
         if (Auth::user()?->role === 'admin') {
             $users = \App\Models\User::where('role', '!=', 'admin')
@@ -75,10 +76,14 @@ Route::middleware('auth')->group(function () {
                 ->get();
         }
 
-        return Inertia::render('ScheduleCalendar', [
+        // Fetch all holidays (including recurring ones)
+        $holidays = \App\Models\Holiday::orderBy('date', 'asc')->get();
+
+        return Inertia::render('Calendar', [
             'users' => $users,
+            'holidays' => $holidays,
         ]);
-    })->name('schedule-calendar');
+    })->name('calendar');
 
     // API routes
     Route::prefix('api')->group(function () {
@@ -89,6 +94,7 @@ Route::middleware('auth')->group(function () {
         Route::get('/schedules', [ScheduleController::class, 'index'])->name('api.schedules.index');
         Route::post('/schedules', [ScheduleController::class, 'store'])->name('api.schedules.store');
         Route::get('/attendances', [AttendanceController::class, 'index'])->name('api.attendances.index');
+        Route::get('/attendances/export/pdf', [AttendanceController::class, 'exportPdf'])->name('api.attendances.export-pdf');
     });
 
     // Admin routes (protected by middleware in controllers)
@@ -96,6 +102,7 @@ Route::middleware('auth')->group(function () {
         Route::get('/dashboard', [DashboardController::class, 'index'])->name('admin.dashboard');
         Route::get('/attendances', [AdminAttendanceController::class, 'index'])->name('admin.attendances.index');
         Route::get('/users', [UserController::class, 'index'])->name('admin.users.index');
+        Route::get('/holidays', [\App\Http\Controllers\Admin\HolidayController::class, 'index'])->name('admin.holidays.index');
     });
 
     Route::get('/scanner', function () {
@@ -119,6 +126,22 @@ Route::middleware('auth')->group(function () {
     Route::prefix('api/admin/attendances')->group(function () {
         Route::post('/', [AdminAttendanceController::class, 'store'])->name('api.admin.attendances.store');
         Route::put('/{attendance}', [AdminAttendanceController::class, 'update'])->name('api.admin.attendances.update');
+        Route::put('/{attendance}/notes', [AdminAttendanceController::class, 'updateNotes'])->name('api.admin.attendances.update-notes');
+        Route::get('/export/pdf', [AdminAttendanceController::class, 'exportPdf'])->name('api.admin.attendances.export-pdf');
+        Route::get('/view/pdf', [AdminAttendanceController::class, 'viewPdf'])->name('api.admin.attendances.view-pdf');
+        Route::get('/export/csv', [AdminAttendanceController::class, 'bulkExport'])->name('api.admin.attendances.export-csv');
+        Route::post('/import', [AdminAttendanceController::class, 'bulkImport'])->name('api.admin.attendances.import');
+    });
+
+    Route::prefix('api/admin/holidays')->group(function () {
+        Route::post('/', [HolidayController::class, 'store'])->name('api.admin.holidays.store');
+        Route::put('/{holiday}', [HolidayController::class, 'update'])->name('api.admin.holidays.update');
+        Route::delete('/{holiday}', [HolidayController::class, 'destroy'])->name('api.admin.holidays.destroy');
+    });
+
+    Route::prefix('api/admin/saved-filters')->group(function () {
+        Route::post('/', [AdminAttendanceController::class, 'saveFilter'])->name('api.admin.saved-filters.store');
+        Route::delete('/{savedFilter}', [AdminAttendanceController::class, 'deleteFilter'])->name('api.admin.saved-filters.destroy');
     });
 
     Route::post('/api/attendance/scan', [AttendanceController::class, 'scan'])->name('api.attendance.scan');

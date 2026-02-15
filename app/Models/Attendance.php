@@ -13,6 +13,8 @@ class Attendance extends Model
         'time_in',
         'time_out',
         'status',
+        'notes',
+        'admin_notes',
     ];
 
     protected function casts(): array

@@ -19,7 +19,15 @@ interface Attendance {
     status: string;
     total_time: string | null;
     is_overtime?: boolean;
+    notes?: string | null;
+    admin_notes?: string | null;
     user: User;
+}
+
+interface SavedFilter {
+    id: number;
+    name: string;
+    filters: Record<string, string>;
 }
 
 interface AttendancesProps {
@@ -32,6 +40,7 @@ interface AttendancesProps {
         links: Array<{ url: string | null; label: string; active: boolean }>;
     };
     users: User[];
+    savedFilters?: SavedFilter[];
     filters: {
         start_date?: string;
         end_date?: string;
@@ -44,7 +53,7 @@ interface AttendancesProps {
     };
 }
 
-export default function AdminAttendances({ attendances, users, filters: initialFilters }: AttendancesProps) {
+export default function AdminAttendances({ attendances, users, savedFilters = [], filters: initialFilters }: AttendancesProps) {
     const [filters, setFilters] = useState({
         start_date: initialFilters.start_date || '',
         end_date: initialFilters.end_date || '',
@@ -58,7 +67,12 @@ export default function AdminAttendances({ attendances, users, filters: initialF
 
     const [showFilters, setShowFilters] = useState(false);
     const [editingAttendance, setEditingAttendance] = useState<Attendance | null>(null);
-    const [editForm, setEditForm] = useState<{ time_in: string; time_out: string }>({ time_in: '', time_out: '' });
+    const [editForm, setEditForm] = useState<{ time_in: string; time_out: string; notes: string; admin_notes: string }>({ 
+        time_in: '', 
+        time_out: '', 
+        notes: '', 
+        admin_notes: '' 
+    });
     const [saving, setSaving] = useState(false);
     const [showAddModal, setShowAddModal] = useState(false);
     const [addForm, setAddForm] = useState<{ user_id: string; date: string; time_in: string; time_out: string }>({
@@ -67,6 +81,8 @@ export default function AdminAttendances({ attendances, users, filters: initialF
         time_in: '',
         time_out: '',
     });
+    const [showSaveFilterModal, setShowSaveFilterModal] = useState(false);
+    const [saveFilterName, setSaveFilterName] = useState('');
 
     const handleFilterChange = (key: string, value: string): void => {
         setFilters({ ...filters, [key]: value });
@@ -95,6 +111,187 @@ export default function AdminAttendances({ attendances, users, filters: initialF
             preserveState: true,
             preserveScroll: true,
         });
+    };
+
+
+    const handleExportCsv = (): void => {
+        const params = new URLSearchParams();
+        if (filters.start_date) params.append('start_date', filters.start_date);
+        if (filters.end_date) params.append('end_date', filters.end_date);
+        if (filters.user_id) params.append('user_id', filters.user_id);
+        if (filters.status) params.append('status', filters.status);
+        if (filters.week) params.append('week', filters.week);
+        if (filters.month) params.append('month', filters.month);
+        if (filters.year) params.append('year', filters.year);
+
+        window.open(`/api/admin/attendances/export/csv?${params.toString()}`, '_blank');
+    };
+
+    const handleImportCsv = async (): Promise<void> => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.csv,.txt';
+        input.onchange = async (e) => {
+            const file = (e.target as HTMLInputElement).files?.[0];
+            if (!file) {
+                return;
+            }
+
+            try {
+                const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+                const formData = new FormData();
+                formData.append('file', file);
+
+                const response = await fetch('/api/admin/attendances/import', {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken,
+                    },
+                    credentials: 'same-origin',
+                    body: formData,
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    await Swal.fire({
+                        icon: 'success',
+                        title: 'Import Successful',
+                        html: `
+                            <p>Imported: ${data.imported} records</p>
+                            <p>Skipped: ${data.skipped} records</p>
+                            ${data.errors && data.errors.length > 0 ? `<p class="mt-2 text-red-600">Errors: ${data.errors.length}</p>` : ''}
+                        `,
+                        showConfirmButton: true,
+                    });
+
+                    if (data.errors && data.errors.length > 0) {
+                        console.error('Import errors:', data.errors);
+                    }
+
+                    router.reload({ only: ['attendances'] });
+                } else {
+                    throw new Error(data.message || 'Failed to import attendance records');
+                }
+            } catch (error) {
+                await Swal.fire({
+                    icon: 'error',
+                    title: 'Import Failed',
+                    text: error instanceof Error ? error.message : 'Failed to import attendance records',
+                });
+            }
+        };
+        input.click();
+    };
+
+    const handleSaveFilter = async (): Promise<void> => {
+        if (!saveFilterName.trim()) {
+            await Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: 'Please enter a filter name',
+            });
+            return;
+        }
+
+        try {
+            const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+
+            const response = await fetch('/api/admin/saved-filters', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    name: saveFilterName,
+                    filters: filters,
+                }),
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                await Swal.fire({
+                    icon: 'success',
+                    title: 'Success',
+                    text: 'Filter saved successfully',
+                    timer: 2000,
+                    showConfirmButton: false,
+                });
+
+                setShowSaveFilterModal(false);
+                setSaveFilterName('');
+                router.reload({ only: ['savedFilters'] });
+            } else {
+                throw new Error(data.message || 'Failed to save filter');
+            }
+        } catch (error) {
+            await Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: error instanceof Error ? error.message : 'Failed to save filter',
+            });
+        }
+    };
+
+    const handleLoadFilter = (savedFilter: SavedFilter): void => {
+        setFilters({ ...filters, ...savedFilter.filters });
+        applyFilters();
+    };
+
+    const handleDeleteFilter = async (savedFilter: SavedFilter): Promise<void> => {
+        const result = await Swal.fire({
+            title: 'Are you sure?',
+            text: `Do you want to delete "${savedFilter.name}"?`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#EF4444',
+            cancelButtonColor: '#6B7280',
+            confirmButtonText: 'Yes, delete it',
+        });
+
+        if (!result.isConfirmed) {
+            return;
+        }
+
+        try {
+            const csrfToken = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content || '';
+
+            const response = await fetch(`/api/admin/saved-filters/${savedFilter.id}`, {
+                method: 'DELETE',
+                headers: {
+                    'Accept': 'application/json',
+                    'X-CSRF-TOKEN': csrfToken,
+                },
+                credentials: 'same-origin',
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                await Swal.fire({
+                    icon: 'success',
+                    title: 'Deleted',
+                    text: 'Filter deleted successfully',
+                    timer: 2000,
+                    showConfirmButton: false,
+                });
+
+                router.reload({ only: ['savedFilters'] });
+            } else {
+                throw new Error(data.message || 'Failed to delete filter');
+            }
+        } catch (error) {
+            await Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: error instanceof Error ? error.message : 'Failed to delete filter',
+            });
+        }
     };
 
     const formatTotalTime = (totalTime: string | null, isOvertime?: boolean): React.JSX.Element | string => {
@@ -162,12 +359,14 @@ export default function AdminAttendances({ attendances, users, filters: initialF
         setEditForm({
             time_in: formatTimeForTimeInput(attendance.time_in),
             time_out: formatTimeForTimeInput(attendance.time_out),
+            notes: attendance.notes || '',
+            admin_notes: attendance.admin_notes || '',
         });
     };
 
     const handleCancelEdit = (): void => {
         setEditingAttendance(null);
-        setEditForm({ time_in: '', time_out: '' });
+        setEditForm({ time_in: '', time_out: '', notes: '', admin_notes: '' });
     };
 
     const handleSaveEdit = async (): Promise<void> => {
@@ -181,9 +380,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
             // Extract just the date part (YYYY-MM-DD) from the attendance date
             // Handle various date formats (ISO string, date object, or YYYY-MM-DD string)
             let dateStr = editingAttendance.date;
-            if (dateStr instanceof Date) {
-                dateStr = dateStr.toISOString().split('T')[0];
-            } else if (typeof dateStr === 'string') {
+            if (typeof dateStr === 'string') {
                 // Extract YYYY-MM-DD from any date string format
                 const dateMatch = dateStr.match(/^(\d{4}-\d{2}-\d{2})/);
                 if (dateMatch) {
@@ -217,6 +414,8 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                 body: JSON.stringify({
                     time_in: timeInValue,
                     time_out: timeOutValue,
+                    notes: editForm.notes,
+                    admin_notes: editForm.admin_notes,
                 }),
             });
 
@@ -232,7 +431,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                 });
 
                 setEditingAttendance(null);
-                setEditForm({ time_in: '', time_out: '' });
+                setEditForm({ time_in: '', time_out: '', notes: '', admin_notes: '' });
                 router.reload({ only: ['attendances'] });
             } else {
                 throw new Error(data.message || 'Failed to update attendance');
@@ -364,6 +563,24 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                     </div>
                     <div className="flex items-center space-x-3">
                         <button
+                            onClick={handleExportCsv}
+                            className="flex items-center space-x-2 bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
+                        >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                            <span>Export CSV</span>
+                        </button>
+                        <button
+                            onClick={handleImportCsv}
+                            className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
+                        >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                            </svg>
+                            <span>Import CSV</span>
+                        </button>
+                        <button
                             onClick={handleAddAttendance}
                             className="flex items-center space-x-2 bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
                         >
@@ -384,6 +601,30 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                 {/* Filters */}
                 {showFilters && (
                     <div className="bg-white shadow-md p-6 border border-gray-200 rounded-xl">
+                        {/* Saved Filters */}
+                        {savedFilters.length > 0 && (
+                            <div className="mb-4 pb-4 border-gray-200 border-b">
+                                <label className="block mb-2 font-medium text-gray-700 text-sm">Saved Filters</label>
+                                <div className="flex flex-wrap gap-2">
+                                    {savedFilters.map((savedFilter) => (
+                                        <div key={savedFilter.id} className="flex items-center gap-2 bg-gray-50 px-3 py-1 border border-gray-200 rounded-lg">
+                                            <button
+                                                onClick={() => handleLoadFilter(savedFilter)}
+                                                className="font-medium text-indigo-600 hover:text-indigo-800 text-sm"
+                                            >
+                                                {savedFilter.name}
+                                            </button>
+                                            <button
+                                                onClick={() => handleDeleteFilter(savedFilter)}
+                                                className="text-red-600 hover:text-red-800 text-sm"
+                                            >
+                                                ×
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                         <div className="gap-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 mb-4">
                             <div>
                                 <label className="block mb-1 font-medium text-gray-700 text-sm">Start Date</label>
@@ -391,7 +632,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                     type="date"
                                     value={filters.start_date}
                                     onChange={(e) => handleFilterChange('start_date', e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                             <div>
@@ -400,7 +641,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                     type="date"
                                     value={filters.end_date}
                                     onChange={(e) => handleFilterChange('end_date', e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                             <div>
@@ -408,7 +649,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                 <select
                                     value={filters.user_id}
                                     onChange={(e) => handleFilterChange('user_id', e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 >
                                     <option value="">All Users</option>
                                     {users.map((user) => (
@@ -423,7 +664,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                 <select
                                     value={filters.status}
                                     onChange={(e) => handleFilterChange('status', e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 >
                                     <option value="">All Status</option>
                                     <option value="Present">Present</option>
@@ -438,7 +679,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                     value={filters.search}
                                     onChange={(e) => handleFilterChange('search', e.target.value)}
                                     placeholder="Name or email..."
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                         </div>
@@ -449,7 +690,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                     type="date"
                                     value={filters.week}
                                     onChange={(e) => handleFilterChange('week', e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                             <div>
@@ -458,7 +699,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                     type="month"
                                     value={filters.month}
                                     onChange={(e) => handleFilterChange('month', e.target.value)}
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                             <div>
@@ -470,7 +711,7 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                     placeholder="YYYY"
                                     min="2000"
                                     max="2100"
-                                    className="px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
                                 />
                             </div>
                         </div>
@@ -487,6 +728,55 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                             >
                                 Apply Filters
                             </button>
+                            <button
+                                onClick={() => setShowSaveFilterModal(true)}
+                                className="bg-gray-600 hover:bg-gray-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
+                            >
+                                Save Filter
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+                {/* Save Filter Modal */}
+                {showSaveFilterModal && (
+                    <div className="z-50 fixed inset-0 flex justify-center items-center bg-black bg-opacity-50">
+                        <div className="bg-white shadow-xl mx-4 rounded-xl w-full max-w-md">
+                            <div className="px-6 py-4 border-gray-200 border-b">
+                                <h2 className="font-bold text-gray-900 text-xl">Save Filter</h2>
+                            </div>
+                            <div className="px-6 py-4">
+                                <label className="block mb-2 font-medium text-gray-700 text-sm">Filter Name *</label>
+                                <input
+                                    type="text"
+                                    value={saveFilterName}
+                                    onChange={(e) => setSaveFilterName(e.target.value)}
+                                    className="bg-white px-3 py-2 border border-gray-300 focus:border-indigo-500 rounded-lg focus:ring-2 focus:ring-indigo-500 w-full"
+                                    placeholder="e.g., This Month - All Users"
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            handleSaveFilter();
+                                        }
+                                    }}
+                                />
+                            </div>
+                            <div className="flex justify-end space-x-3 px-6 py-4 border-gray-200 border-t">
+                                <button
+                                    onClick={() => {
+                                        setShowSaveFilterModal(false);
+                                        setSaveFilterName('');
+                                    }}
+                                    className="bg-white hover:bg-gray-50 px-4 py-2 border border-gray-300 rounded-lg font-medium text-gray-700 text-sm transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSaveFilter}
+                                    className="bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg font-medium text-white text-sm transition-colors"
+                                >
+                                    Save
+                                </button>
+                            </div>
                         </div>
                     </div>
                 )}
@@ -555,6 +845,9 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                         Total Time
                                     </th>
                                     <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
+                                        Notes
+                                    </th>
+                                    <th className="px-6 py-3 font-medium text-gray-500 text-xs text-left uppercase tracking-wider">
                                         Actions
                                     </th>
                                 </tr>
@@ -587,6 +880,21 @@ export default function AdminAttendances({ attendances, users, filters: initialF
                                             </td>
                                             <td className="px-6 py-4 text-gray-900 text-sm whitespace-nowrap">
                                                 {formatTotalTime(attendance.total_time, attendance.is_overtime)}
+                                            </td>
+                                            <td className="px-6 py-4 max-w-xs text-gray-500 text-sm">
+                                                {attendance.notes && (
+                                                    <div className="truncate" title={attendance.notes}>
+                                                        📝 {attendance.notes}
+                                                    </div>
+                                                )}
+                                                {attendance.admin_notes && (
+                                                    <div className="text-purple-600 truncate" title={attendance.admin_notes}>
+                                                        🔒 {attendance.admin_notes}
+                                                    </div>
+                                                )}
+                                                {!attendance.notes && !attendance.admin_notes && (
+                                                    <span className="text-gray-400">-</span>
+                                                )}
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap">
                                                 <button
